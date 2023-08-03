@@ -264,7 +264,8 @@ Example [H264 Codecs](https://github.com/cisco/openh264/releases/tag/v1.8.0) (De
 ### Notes
   - For now I am only supporting **Windows** installations for video nodes.
     - I do not have access to Mac or a stand-alone linux distro. If you get them working and want to PR a patch/directions, feel free. 
-  - Video nodes require [FFMPEG](https://ffmpeg.org/download.html). You should download the proper FFMPEG binaries for you system and set the FFMPEG path in the config file. 
+  - Video nodes require [FFMPEG](https://ffmpeg.org/download.html). You should download the proper FFMPEG binaries for you system and set the FFMPEG path in the config file,this needs to be the full path poiting to the ffmpeg.exe
+  - eq. "ffmpeg_bin_path": "C:\\Users\\%USERNAME%\Documents\\custom-local-path\\ffmpeg\ffmpeg.exe", . 
   - Additionally, if you want to use H264 codec need to [download OpenH264 1.8.0](https://github.com/cisco/openh264/releases/tag/v1.8.0) and place it in the root of ComfyUI (Example: `C:\ComfyUI_windows_portable`). 
   - FFV1 will complain about invalid container. You can ignore this. The resulting MKV file is readable. I have not figured out what this issue is about. Documentaion tells me to use MKV, but it's telling me it's unsupported.
     - If you know how to resolve this, I'd love a PR
