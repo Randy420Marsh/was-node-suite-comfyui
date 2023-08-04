@@ -13,4 +13,4 @@ if exist "%python_exec%" (
 	pip install -r %requirements_txt%
 )
 
-pause
+REM pause
