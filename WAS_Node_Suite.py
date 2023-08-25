@@ -2072,16 +2072,21 @@ class WAS_Tools_Class():
         
     class worley_noise:
 
-        def __init__(self, height=512, width=512, density=50, option=0, use_broadcast_ops=True):
+        def __init__(self, height=512, width=512, density=50, option=0, use_broadcast_ops=True, flat=False, seed=None):
 
             self.height = height
             self.width = width
             self.density = density
             self.use_broadcast_ops = use_broadcast_ops
-            self.image = self.generateImage(option)
+            self.seed = seed
+            self.generate_points_and_colors()
+            self.calculate_noise(option)
+            self.image = self.generateImage(option, flat_mode=flat)
 
-        def generate_points(self):
-            self.points = np.random.randint(0, (self.width, self.height), (self.density, 2))
+        def generate_points_and_colors(self):
+            rng = np.random.default_rng(self.seed)
+            self.points = rng.integers(0, self.width, (self.density, 2))
+            self.colors = rng.integers(0, 256, (self.density, 3))
 
         def calculate_noise(self, option):
             self.data = np.zeros((self.height, self.width))
@@ -2099,17 +2104,19 @@ class WAS_Tools_Class():
             distances = np.sort(d, axis=0)
             self.data = distances[option]
 
-        def generateImage(self, option):
-            self.generate_points()
-            if self.use_broadcast_ops:
-                self.broadcast_calculate_noise(option)
+        def generateImage(self, option, flat_mode=False):
+            if flat_mode:
+                flat_color_data = np.zeros((self.height, self.width, 3), dtype=np.uint8)
+                for h in range(self.height):
+                    for w in range(self.width):
+                        closest_point_idx = np.argmin(np.sum((self.points - np.array([w, h])) ** 2, axis=1))
+                        flat_color_data[h, w, :] = self.colors[closest_point_idx]
+                return Image.fromarray(flat_color_data, 'RGB')
             else:
-                self.calculate_noise(option)
-            min_val, max_val = np.min(self.data), np.max(self.data)
-            data_scaled = (self.data - min_val) / (max_val - min_val) * 255
-            data_scaled = data_scaled.astype(np.uint8)
-            
-            return Image.fromarray(data_scaled).convert('RGB')
+                min_val, max_val = np.min(self.data), np.max(self.data)
+                data_scaled = (self.data - min_val) / (max_val - min_val) * 255
+                data_scaled = data_scaled.astype(np.uint8)
+                return Image.fromarray(data_scaled, 'L')
             
     # Make Image Seamless
             
@@ -4191,6 +4198,10 @@ class WAS_Image_Voronoi_Noise_Filter:
                 "modulator": ("INT", {"default": 0, "max": 8, "min": 0, "step": 1}),
                 "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),                
             },
+            "optional": {
+                "flat": (["False", "True"],),
+                "RGB_output": (["True", "False"],),
+            }
         }
 
     RETURN_TYPES = ("IMAGE",)
@@ -4199,11 +4210,16 @@ class WAS_Image_Voronoi_Noise_Filter:
 
     CATEGORY = "WAS Suite/Image/Generate/Noise"
 
-    def voronoi_noise_filter(self, width, height, density, modulator, seed):
+    def voronoi_noise_filter(self, width, height, density, modulator, seed, flat="False", RGB_output="True"):
     
         WTools = WAS_Tools_Class()
         
-        image = WTools.worley_noise(height=width, width=height, density=density, option=modulator, use_broadcast_ops=True).image
+        image = WTools.worley_noise(height=height, width=width, density=density, option=modulator, use_broadcast_ops=True, seed=seed, flat=(flat == "True")).image
+        
+        if RGB_output == "True":
+            image = image.convert("RGB")
+        else:
+            image = image.convert("L")
 
         return (pil2tensor(image), )         
 
@@ -4247,33 +4263,39 @@ class WAS_Image_Power_Noise:
             noise = np.random.normal(0, attenuation, (height, width))
             return noise
 
-        def pink_noise(width, height, frequency, attenuation):
+        def blue_noise(width, height, frequency, attenuation):
             noise = grey_noise(width, height, attenuation)
             scale = 1.0 / (width * height)
-            f = np.fft.fftfreq(height)[:, np.newaxis] ** 2 + np.fft.fftfreq(width) ** 2
+            fy = np.fft.fftfreq(height)[:, np.newaxis] ** 2
+            fx = np.fft.fftfreq(width) ** 2
+            f = fy + fx
             power = np.sqrt(f)
             power[0, 0] = 1
-            noise = np.fft.ifft2(np.fft.fft2(noise) * power)
+            noise = np.fft.ifft2(np.fft.fft2(noise) / power)
             noise *= scale / noise.std()
             return np.real(noise)
 
         def green_noise(width, height, frequency, attenuation):
             noise = grey_noise(width, height, attenuation)
             scale = 1.0 / (width * height)
-            f = np.fft.fftfreq(height)[:, np.newaxis] ** 2 + np.fft.fftfreq(width) ** 2
+            fy = np.fft.fftfreq(height)[:, np.newaxis] ** 2
+            fx = np.fft.fftfreq(width) ** 2
+            f = fy + fx
             power = np.sqrt(f)
             power[0, 0] = 1
             noise = np.fft.ifft2(np.fft.fft2(noise) / np.sqrt(power))
             noise *= scale / noise.std()
             return np.real(noise)
 
-        def blue_noise(width, height, frequency, attenuation):
+        def pink_noise(width, height, frequency, attenuation):
             noise = grey_noise(width, height, attenuation)
             scale = 1.0 / (width * height)
-            f = np.fft.fftfreq(height)[:, np.newaxis] ** 2 + np.fft.fftfreq(width) ** 2
+            fy = np.fft.fftfreq(height)[:, np.newaxis] ** 2
+            fx = np.fft.fftfreq(width) ** 2
+            f = fy + fx
             power = np.sqrt(f)
             power[0, 0] = 1
-            noise = np.fft.ifft2(np.fft.fft2(noise) / power)
+            noise = np.fft.ifft2(np.fft.fft2(noise) * power)
             noise *= scale / noise.std()
             return np.real(noise)
 
@@ -4288,6 +4310,9 @@ class WAS_Image_Power_Noise:
             
         def blend_noise(width, height, masks, noise_types, attenuations):
             blended_image = Image.new("L", (width, height), color=0)
+            fy = np.fft.fftfreq(height)[:, np.newaxis] ** 2
+            fx = np.fft.fftfreq(width) ** 2
+            f = fy + fx
             i = 0
             for mask, noise_type, attenuation in zip(masks, noise_types, attenuations):
                 mask = Image.fromarray((255 * (mask - np.min(mask)) / (np.max(mask) - np.min(mask))).astype(np.uint8).real)
@@ -6399,6 +6424,65 @@ class WAS_Image_Select_Channel:
 
         return channel_img
         
+# IMAGES TO RGB
+
+class WAS_Images_To_RGB:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "image_to_rgb"
+
+    CATEGORY = "WAS Suite/Image"
+
+    def image_to_rgb(self, images):
+
+        if len(images) > 1:
+            tensors = []
+            for image in images:
+                tensors.append(pil2tensor(tensor2pil(image).convert('RGB')))
+            tensors = torch.cat(tensors, dim=0)
+            return (tensors, )
+        else:
+            return (pil2tensor(tensor2pil(images).convert("RGB")), )    
+            
+# IMAGES TO LINEAR
+
+class WAS_Images_To_Linear:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+            },
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "image_to_linear"
+
+    CATEGORY = "WAS Suite/Image"
+
+    def image_to_linear(self, images):
+
+        if len(images) > 1:
+            tensors = []
+            for image in images:
+                tensors.append(pil2tensor(tensor2pil(image).convert('L')))
+            tensors = torch.cat(tensors, dim=0)
+            return (tensors, )
+        else:
+            return (pil2tensor(tensor2pil(images).convert("L")), )
 
 
 # IMAGE MERGE RGB CHANNELS
@@ -7049,37 +7133,6 @@ class WAS_Load_Image:
         with open(image_path, 'rb') as f:
             m.update(f.read())
         return m.digest().hex()
-        
-        
-# IMAGES TO RGB
-
-class WAS_Images_To_RGB:
-    def __init__(self):
-        pass
-
-    @classmethod
-    def INPUT_TYPES(cls):
-        return {
-            "required": {
-                "images": ("IMAGE",),
-            },
-        }
-
-    RETURN_TYPES = ("IMAGE",)
-    RETURN_NAMES = ("images",)
-    FUNCTION = "images_to_rgb"
-
-    CATEGORY = "WAS Suite/Image"
-
-    def images_to_rgb(self, images):
-
-        tensors = []
-        for image in images:
-            tensors.append(pil2tensor(tensor2pil(image).convert("RGB")))
-        tensors = torch.cat(tensors, dim=0)
-
-        return (tensors,)
-        
         
 # MASK BATCH TO MASK
 
@@ -11306,8 +11359,10 @@ class WAS_Random_Number:
         return (number, float(number), int(number))
         
     @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("NaN")
+    def IS_CHANGED(cls, seed, **kwargs):
+        m = hashlib.sha256()
+        m.update(seed)
+        return m.digest().hex()
 
 # TRUE RANDOM NUMBER
 
@@ -11322,6 +11377,7 @@ class WAS_True_Random_Number:
                 "api_key": ("STRING",{"default":"00000000-0000-0000-0000-000000000000", "multiline": False}),
                 "minimum": ("FLOAT", {"default": 0, "min": -18446744073709551615, "max": 18446744073709551615}),
                 "maximum": ("FLOAT", {"default": 10000000, "min": -18446744073709551615, "max": 18446744073709551615}),
+                "mode": (["random", "fixed"],),
             }
         }
 
@@ -11338,7 +11394,7 @@ class WAS_True_Random_Number:
         # Return number
         return (number, )
         
-    def get_random_numbers(self, api_key=None, amount=1, minimum=0, maximum=10):
+    def get_random_numbers(self, api_key=None, amount=1, minimum=0, maximum=10, mode="random"):
         '''Get random number(s) from random.org'''
         if api_key in [None, '00000000-0000-0000-0000-000000000000', '']:
             cstr("No API key provided! A valid RANDOM.ORG API key is required to use `True Random.org Number Generator`").error.print()
@@ -11369,7 +11425,11 @@ class WAS_True_Random_Number:
         return [0]
         
     @classmethod
-    def IS_CHANGED(cls, **kwargs):
+    def IS_CHANGED(cls, api_key, mode, **kwargs):
+        m = hashlib.sha256()
+        m.update(api_key)
+        if mode == 'fixed':
+            return m.digest().hex()
         return float("NaN")
 
 
@@ -11398,11 +11458,12 @@ class WAS_Constant_Number:
         # Return number
         if number_type:
             if number_type == 'integer':
-                return (int(number), )
+                return (int(number), float(number), int(number) )
             elif number_type == 'integer':
-                return (float(number), )
+                return (float(number), float(number), int(number) )
             elif number_type == 'bool':
-                return ((1 if int(number) > 0 else 0), )
+                boolean = (1 if int(number) > 0 else 0)
+                return (int(boolean), float(boolean), int(boolan) )
             else:
                 return (number, float(number), int(number) )
 
@@ -11735,6 +11796,7 @@ class WAS_Number_Operation:
                 result = +(number_a != number_b)
                 return result, result, int(result)
             else:
+                cstr("Invalid number operation selected.").error.print()
                 return (number_a, number_a, int(number_a))
 
 # NUMBER MULTIPLE OF
@@ -13021,8 +13083,9 @@ NODE_CLASS_MAPPINGS = {
     "Image fDOF Filter": WAS_Image_fDOF,
     "Image to Latent Mask": WAS_Image_To_Mask,
     "Image to Noise": WAS_Image_To_Noise,
-    "Images to RGB": WAS_Images_To_RGB,
     "Image to Seed": WAS_Image_To_Seed,
+    "Images to RGB": WAS_Images_To_RGB,
+    "Images to Linear": WAS_Images_To_Linear,
     "Integer place counter": WAS_Integer_Place_Counter,
     "Image Voronoi Noise Filter": WAS_Image_Voronoi_Noise_Filter,
     "KSampler (Legacy)": WAS_KSampler,
