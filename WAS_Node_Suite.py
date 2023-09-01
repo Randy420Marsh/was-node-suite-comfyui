@@ -9082,7 +9082,11 @@ class WAS_Blend_Latents:
         else:
             raise ValueError("Unsupported blending mode. Please choose from 'add', 'multiply', 'divide', 'subtract', 'overlay', 'screen', 'difference', 'exclusion', 'hard_light', 'linear_dodge', 'soft_light', 'custom_noise'.")
 
+        blended_latent = self.normalize(blended_latent)
         return blended_latent
+
+    def normalize(self, latent):
+        return (latent - latent.min()) / (latent.max() - latent.min())
 
 
         
@@ -9707,6 +9711,40 @@ class WAS_Search_and_Replace:
         import re
         text = re.sub(find, replace, text)
         return text
+        
+        
+# Text Shuffle
+
+class WAS_Text_Shuffle:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text": (TEXT_TYPE, {"forceInput": (True if TEXT_TYPE == 'STRING' else False)}),
+                "separator": ("STRING", {"default": ',', "multiline": False}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
+            }
+        }
+
+    RETURN_TYPES = (TEXT_TYPE,)
+    FUNCTION = "shuffle"
+
+    CATEGORY = "WAS Suite/Text/Operations"
+
+    def shuffle(self, text, separator, seed):
+    
+        if seed is not None:
+            random.seed(seed)
+        
+        text_list = text.split(separator)
+        random.shuffle(text_list)
+        new_text = separator.join(text_list)
+        
+        return (new_text, )
+        
 
 
 # Text Search and Replace
@@ -13252,6 +13290,7 @@ NODE_CLASS_MAPPINGS = {
     "Text Random Line": WAS_Text_Random_Line,
     "Text Random Prompt": WAS_Text_Random_Prompt,
     "Text String": WAS_Text_String,
+    "Text Shuffle": WAS_Text_Shuffle,
     "Text to Conditioning": WAS_Text_to_Conditioning,
     "Text to Console": WAS_Text_to_Console,
     "Text to Number": WAS_Text_To_Number,
