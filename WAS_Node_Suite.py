@@ -5471,24 +5471,26 @@ class WAS_Image_Rotate_Hue:
         if hue_shift > 1.0 or hue_shift < 0.0:
             cstr(f"The hue_shift `{cstr.color.LIGHTYELLOW}{hue_shift}{cstr.color.END}` is out of range. Valid range is {cstr.color.BOLD}0.0 - 1.0{cstr.color.END}").error.print()
             hue_shift = 0.0
-        return (pil2tensor(self.rotate_hue(tensor2pil(image), hue_shift)), )
+        shifted_hue = pil2tensor(self.hue_rotation(image, hue_shift))
+        return (shifted_hue, )
 
-    def rotate_hue(self, image, hue_shift=0.0):
+    def hue_rotation(self, image, hue_shift=0.0):
         import colorsys
-        def rgb_to_hls(r, g, b):
-            h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
-            return h, l, s
-        def hls_to_rgb(h, l, s):
-            r, g, b = colorsys.hls_to_rgb(h, l, s)
-            return int(r * 255), int(g * 255), int(b * 255)
+        if hue_shift > 1.0 or hue_shift < 0.0:
+            print(f"The hue_shift '{hue_shift}' is out of range. Valid range is 0.0 - 1.0")
+            hue_shift = 0.0
 
-        rotated_image = Image.new("RGB", image.size)
-        for x in range(image.width):
-            for y in range(image.height):
-                r, g, b = image.getpixel((x, y))
-                h, l, s = rgb_to_hls(r, g, b)
+        pil_image = tensor2pil(image)
+        width, height = pil_image.size
+        rotated_image = Image.new("RGB", (width, height))
+
+        for x in range(width):
+            for y in range(height):
+                r, g, b = pil_image.getpixel((x, y))
+                h, l, s = colorsys.rgb_to_hls(r / 255, g / 255, b / 255)
                 h = (h + hue_shift) % 1.0
-                r, g, b = hls_to_rgb(h, l, s)
+                r, g, b = colorsys.hls_to_rgb(h, l, s)
+                r, g, b = int(r * 255), int(g * 255), int(b * 255)
                 rotated_image.putpixel((x, y), (r, g, b))
 
         return rotated_image
@@ -5608,19 +5610,18 @@ class WAS_Remove_Rembg:
         return {
             "required": {
                 "images": ("IMAGE",),
-                "transparency": (["true","false"],),
+                "transparency": ("BOOLEAN", {"default": True},),
                 "model": (["u2net", "u2netp", "u2net_human_seg", "silueta", "isnet-general-use", "isnet-anime"],),
-                "post_processing": ([False, True],),
-                "only_mask": ([False, True],),
-                "alpha_matting": ([False, True],),
+                "post_processing": ("BOOLEAN", {"default": False}),
+                "only_mask": ("BOOLEAN", {"default": False},),
+                "alpha_matting": ("BOOLEAN", {"default": False},),
                 "alpha_matting_foreground_threshold": ("INT", {"default": 240, "min": 0, "max": 255}),
                 "alpha_matting_background_threshold": ("INT", {"default": 10, "min": 0, "max": 255}),
                 "alpha_matting_erode_size": ("INT", {"default": 10, "min": 0, "max": 255}),
                 "background_color": (["none", "black", "white", "magenta", "chroma green", "chroma blue"],),
-                #"putalpha": ([False, True],),
+                # "putalpha": ("BOOLEAN", {"default": True},),
             },
         }
-
 
     RETURN_TYPES = ("IMAGE",)
     RETURN_NAMES = ("images",)
@@ -5628,29 +5629,65 @@ class WAS_Remove_Rembg:
 
     CATEGORY = "WAS Suite/Image/AI"
 
+     # A helper function to convert from strings to logical boolean
+     # Conforms to https://docs.python.org/3/library/stdtypes.html#truth-value-testing
+     # With the addition of evaluating string representations of Falsey types
+    def __convertToBool(self, x):
+
+        # Evaluate string representation of False types
+        if type(x) == str:
+            x = x.strip()
+            if (x.lower() == 'false'
+                or x.lower() == 'none'
+                or x == '0'
+                or x == '0.0'
+                or x == '0j'
+                or x == "''"
+                or x == '""'
+                or x == "()"
+                or x == "[]"
+                or x == "{}"
+                or x.lower() == "decimal(0)"
+                or x.lower() == "fraction(0,1)"
+                or x.lower() == "set()"
+                or x.lower() == "range(0)"
+            ):
+                return False
+            else:
+                return True
+
+        # Anything else will be evaluated by the bool function
+        return bool(x)
+
     def image_rembg(
-        self, 
-        images, 
-        transparency="true", 
-        model="u2net", 
-        alpha_matting=False, 
-        alpha_matting_foreground_threshold=240,
-        alpha_matting_background_threshold=10,
-        alpha_matting_erode_size=10,
-        post_processing=False,
-        only_mask=False,
-        background_color = "none",
-        #putalpha = False,
+            self,
+            images,
+            transparency=True,
+            model="u2net",
+            alpha_matting=False,
+            alpha_matting_foreground_threshold=240,
+            alpha_matting_background_threshold=10,
+            alpha_matting_erode_size=10,
+            post_processing=False,
+            only_mask=False,
+            background_color="none",
+            # putalpha = False,
     ):
+
+        # ComfyUI will allow strings in place of booleans, validate the input.
+        transparency = transparency if type(transparency) is bool else self.__convertToBool(transparency)
+        alpha_matting = alpha_matting if type(alpha_matting) is bool else self.__convertToBool(alpha_matting)
+        post_processing = post_processing if type(post_processing) is bool else self.__convertToBool(post_processing)
+        only_mask = only_mask if type(only_mask) is bool else self.__convertToBool(only_mask)
 
         if "rembg" not in packages():
             install_package("rembg")
-            
+
         from rembg import remove, new_session
-    
+
         os.environ['U2NET_HOME'] = os.path.join(MODELS_DIR, 'rembg')
         os.makedirs(os.environ['U2NET_HOME'], exist_ok=True)
-    
+
         # Set bgcolor
         bgrgba = None
         match background_color:
@@ -5667,7 +5704,7 @@ class WAS_Remove_Rembg:
             case _:
                 bgrgba = None
 
-        if transparency == "true" and bgrgba is not None:
+        if transparency and bgrgba is not None:
             bgrgba[3] = 0
 
         batch_tensor = []
@@ -5675,20 +5712,20 @@ class WAS_Remove_Rembg:
             image = tensor2pil(image)
             batch_tensor.append(pil2tensor(
                 remove(
-                     image,
+                    image,
                     session=new_session(model),
-                    post_process_mask = post_processing,
-                    alpha_matting = alpha_matting,
-                    alpha_matting_foreground_threshold = alpha_matting_foreground_threshold,
-                    alpha_matting_background_threshold = alpha_matting_background_threshold,
-                    alpha_matting_erode_size = alpha_matting_erode_size,
-                    only_mask = only_mask,
-                    bgcolor = bgrgba,
-                    #putalpha = putalpha,
-                    )
-                    .convert(('RGBA' if transparency == 'true' else 'RGB'))))
+                    post_process_mask=post_processing,
+                    alpha_matting=alpha_matting,
+                    alpha_matting_foreground_threshold=alpha_matting_foreground_threshold,
+                    alpha_matting_background_threshold=alpha_matting_background_threshold,
+                    alpha_matting_erode_size=alpha_matting_erode_size,
+                    only_mask=only_mask,
+                    bgcolor=bgrgba,
+                    # putalpha = putalpha,
+                )
+                .convert(('RGBA' if transparency else 'RGB'))))
         batch_tensor = torch.cat(batch_tensor, dim=0)
-        
+
         return (batch_tensor,)
 
 
@@ -10564,6 +10601,8 @@ class WAS_BLIP_Model_Loader:
             exit
             
         blip_dir = os.path.join(WAS_SUITE_ROOT, 'repos'+os.sep+'BLIP')
+        if blip_dir not in sys.path:
+            sys.path.append(blip_dir)
 
         if not os.path.exists(blip_dir):
             from git.repo.base import Repo
@@ -10656,8 +10695,10 @@ class WAS_BLIP_Analyze_Image:
             ]) 
             image = transform(raw_image).unsqueeze(0).to(device)   
             return image.view(1, -1, image_size, image_size)  # Change the shape of the output tensor       
-    
-        sys.path.append(os.path.join(WAS_SUITE_ROOT, 'repos'+os.sep+'BLIP'))
+        
+        blip_dir = os.path.join(WAS_SUITE_ROOT, 'repos'+os.sep+'BLIP')
+        if blip_dir not in sys.path:
+            sys.path.append(blip_dir)
         
         from torchvision import transforms
         from torchvision.transforms.functional import InterpolationMode
