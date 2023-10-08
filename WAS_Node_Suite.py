@@ -3617,6 +3617,87 @@ class WAS_Image_Paste_Crop_Location:
 
 # IMAGE GRID IMAGE
 
+class WAS_Image_Grid_Image_Batch:
+    def __init__(self):
+        pass
+        
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "border_width": ("INT", {"default":3, "min": 0, "max": 100, "step":1}),
+                "number_of_columns": ("INT", {"default":6, "min": 1, "max": 24, "step":1}),
+                "max_cell_size": ("INT", {"default":256, "min":32, "max":1280, "step":1}),
+                "border_red": ("INT", {"default":0, "min": 0, "max": 255, "step":1}),
+                "border_green": ("INT", {"default":0, "min": 0, "max": 255, "step":1}),
+                "border_blue": ("INT", {"default":0, "min": 0, "max": 255, "step":1}),
+            }
+        }
+        
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "smart_grid_image"
+    
+    CATEGORY = "WAS Suite/Image/Process"
+
+    def smart_grid_image(self, images, number_of_columns=6, max_cell_size=256, add_border=False, border_red=255, border_green=255, border_blue=255, border_width=3):
+        
+        cols = number_of_columns
+        size = (max_cell_size, max_cell_size)
+        border_color = (border_red, border_green, border_blue)
+
+        max_width, max_height = size
+        row_height = 0
+        images_resized = []
+        for tensor_img in images:
+            img = tensor2pil(tensor_img)
+            
+            img_w, img_h = img.size
+            aspect_ratio = img_w / img_h
+            if aspect_ratio > 1:  # landscape
+                thumb_w = min(max_width, img_w - border_width)
+                thumb_h = thumb_w / aspect_ratio
+            else:  # portrait
+                thumb_h = min(max_height, img_h - border_width)
+                thumb_w = thumb_h * aspect_ratio
+
+            pad_w = max_width - int(thumb_w)
+            pad_h = max_height - int(thumb_h)
+            left = pad_w // 2
+            top = pad_h // 2
+            right = pad_w - left
+            bottom = pad_h - top
+            padding = (left, top, right, bottom)
+            img_resized = ImageOps.expand(img.resize((int(thumb_w), int(thumb_h))), padding)
+
+            if add_border:
+                img_resized = ImageOps.expand(img_resized, border=border_width // 2, fill=border_color)
+
+            images_resized.append(img_resized)
+            row_height = max(row_height, img_resized.size[1])
+        
+        row_height = int(row_height)
+
+        total_images = len(images_resized)
+        rows = math.ceil(total_images / cols)
+        new_image = Image.new('RGB', (cols * size[0] + (cols - 1) * border_width,
+                                      rows * row_height + (rows - 1) * border_width), border_color)
+
+        for i, img in enumerate(images_resized):
+            x = (i % cols) * (size[0] + border_width)
+            y = (i // cols) * (row_height + border_width)
+            if img.size == (size[0], size[1]):
+                new_image.paste(img, (x, y, x + img.size[0], y + img.size[1]))
+            else:
+                img = img.resize((size[0], size[1]))
+                new_image.paste(img, (x, y, x + size[0], y + size[1]))
+        
+        new_image = ImageOps.expand(new_image, border=border_width, fill=border_color)
+
+        return (pil2tensor(new_image), )
+
+# IMAGE GRID IMAGE FROM PATH
+
 class WAS_Image_Grid_Image:
     def __init__(self):
         pass
@@ -7085,8 +7166,6 @@ class WAS_Image_Save:
                 if extension == 'png':
                     img.save(output_file,
                              pnginfo=metadata, optimize=True)
-                elif extension == 'webp':
-                    img.save(output_file, quality=quality)
                 elif extension in ["jpg", "jpeg"]:
                     img.save(output_file,
                              quality=quality, optimize=True)
@@ -10593,7 +10672,6 @@ class WAS_BLIP_Model_Loader:
     
         if ( 'timm' not in packages() 
             or 'transformers' not in packages() 
-            or 'GitPython' not in packages()
             or 'fairscale' not in packages() ):
             cstr(f"Modules or packages are missing to use BLIP models. Please run the `{os.path.join(WAS_SUITE_ROOT, 'requirements.txt')}` through ComfyUI's ptyhon executable.").error.print()
             exit
@@ -10602,24 +10680,13 @@ class WAS_BLIP_Model_Loader:
             cstr(f"`transformers==4.26.1` is required for BLIP models. Please run the `{os.path.join(WAS_SUITE_ROOT, 'requirements.txt')}` through ComfyUI's ptyhon executable.").error.print()
             exit
             
-        blip_dir = os.path.join(WAS_SUITE_ROOT, 'repos'+os.sep+'BLIP')
-        if blip_dir not in sys.path:
-            sys.path.append(blip_dir)
-
-        if not os.path.exists(blip_dir):
-            from git.repo.base import Repo
-            cstr("Installing BLIP...").msg.print()
-            Repo.clone_from('https://github.com/WASasquatch/BLIP-Python', os.path.join(WAS_SUITE_ROOT, 'repos'+os.sep+'BLIP'))
-            
-        sys.path.append(blip_dir)
-            
         device = 'cpu'
         conf = getSuiteConfig()
         size = 384
             
         if blip_model == 'caption':
 
-            from models.blip import blip_decoder
+            from .modules.BLIP.blip_module import blip_decoder
             
             blip_dir = os.path.join(MODELS_DIR, 'blip')
             if not os.path.exists(blip_dir):
@@ -10638,7 +10705,7 @@ class WAS_BLIP_Model_Loader:
             
         elif blip_model == 'interrogate':
         
-            from models.blip_vqa import blip_vqa
+            from .modules.BLIP.blip_module import blip_vqa
             
             blip_dir = os.path.join(MODELS_DIR, 'blip')
             if not os.path.exists(blip_dir):
@@ -10698,10 +10765,6 @@ class WAS_BLIP_Analyze_Image:
             image = transform(raw_image).unsqueeze(0).to(device)   
             return image.view(1, -1, image_size, image_size)  # Change the shape of the output tensor       
         
-        blip_dir = os.path.join(WAS_SUITE_ROOT, 'repos'+os.sep+'BLIP')
-        if blip_dir not in sys.path:
-            sys.path.append(blip_dir)
-        
         from torchvision import transforms
         from torchvision.transforms.functional import InterpolationMode
         
@@ -10720,7 +10783,7 @@ class WAS_BLIP_Analyze_Image:
             if blip_model:
                 model = blip_model[0].to(device)
             else:
-                from models.blip import blip_decoder
+                from .modules.BLIP.blip_module import blip_decoder
                 
                 blip_dir = os.path.join(MODELS_DIR, 'blip')
                 if not os.path.exists(blip_dir):
@@ -10749,7 +10812,7 @@ class WAS_BLIP_Analyze_Image:
             if blip_model:
                 model = blip_model[0].to(device)
             else:
-                from models.blip_vqa import blip_vqa
+                from .modules.BLIP.blip_module import blip_vqa
                 
                 blip_dir = os.path.join(MODELS_DIR, 'blip')
                 if not os.path.exists(blip_dir):
@@ -11163,11 +11226,11 @@ class WAS_Image_Bounds:
     CATEGORY = "WAS Suite/Image/Bound"
     
     def image_bounds(self, image):
-        _, height, width, _ = image.shape
-        
-        image_bounds = [0, height - 1, 0, width - 1]
-        
-        return (image_bounds,)
+        if len(image.shape) == 4:
+            bounds = [(0, img.shape[1] - 1, 0, img.shape[2] - 1) for img in image]
+        else:
+            bounds = [(0, image.shape[0] - 1, 0, image.shape[1] - 1)]
+        return (bounds,)
 
 
 # INSET IMAGE BOUNDS
@@ -11193,23 +11256,14 @@ class WAS_Inset_Image_Bounds:
     CATEGORY = "WAS Suite/Image/Bound"
     
     def inset_image_bounds(self, image_bounds, inset_left, inset_right, inset_top, inset_bottom):
-        # Unpack the image bounds
-        rmin, rmax, cmin, cmax = image_bounds
-        
-        # Apply insets
-        rmin = rmin + inset_top
-        rmax = rmax - inset_bottom
-        cmin = cmin + inset_left
-        cmax = cmax - inset_right
-
-        # Check if the resulting bounds are valid
-        if rmin > rmax or cmin > cmax:
-            cstr("Invalid insets provided. Please make sure the insets do not exceed the image bounds.").error.print()
-            return
-        
-        image_bounds = [rmin, rmax, cmin, cmax]
-        
-        return (image_bounds,)
+        inset_bounds = []
+        for rmin, rmax, cmin, cmax in image_bounds:
+            rmin += inset_top
+            rmax -= inset_bottom
+            cmin += inset_left
+            cmax -= inset_right
+            inset_bounds.append((rmin, rmax, cmin, cmax))
+        return (inset_bounds,)
 
 
 # WAS BOUNDED IMAGE BLEND
@@ -11309,15 +11363,11 @@ class WAS_Bounded_Image_Crop:
     CATEGORY = "WAS Suite/Image/Bound"
     
     def bounded_image_crop(self, image, image_bounds):
-        # Unpack the image bounds
-        rmin, rmax, cmin, cmax = image_bounds
-
-        # Check if the provided bounds are valid
-        if rmin > rmax or cmin > cmax:
-            cstr("Invalid bounds provided. Please make sure the bounds are within the image dimensions.").error.print()
-
-        # Crop the image using the provided bounds and return it
-        return (image[:, rmin:rmax+1, cmin:cmax+1, :],)
+        cropped_images = []
+        for rmin, rmax, cmin, cmax in image_bounds:
+            cropped_image = image[:, rmin:rmax + 1, cmin:cmax + 1, :]
+            cropped_images.append(cropped_image)
+        return (torch.cat(cropped_images, dim=0),)
 
 
 # WAS BOUNDED IMAGE BLEND WITH MASK
@@ -11343,46 +11393,22 @@ class WAS_Bounded_Image_Blend_With_Mask:
     
     CATEGORY = "WAS Suite/Image/Bound"
     
-    def bounded_image_blend_with_mask(self, target, target_mask, target_bounds, source, blend_factor, feathering):
-        # Convert PyTorch tensors to PIL images
-        target_pil = Image.fromarray((target.squeeze(0).cpu().numpy() * 255).clip(0, 255).astype(np.uint8))
-        target_mask_pil = Image.fromarray((target_mask.cpu().numpy() * 255).astype(np.uint8), mode='L')
-        source_pils = []
-        if source.ndim > 3:
-            for source_img in source:
-                source_pils.append(Image.fromarray((source_img.squeeze(0).cpu().numpy() * 255).astype(np.uint8)))
-        else:
-            source_pils.append(Image.fromarray((source.squeeze(0).cpu().numpy() * 255).astype(np.uint8)))
+    def bounded_image_crop_with_mask(self, image, mask, padding_left, padding_right, padding_top, padding_bottom):
+        cropped_images = []
+        bounds = []
+        for img, msk in zip(image, mask):
+            rows = torch.any(msk, axis=1)
+            cols = torch.any(msk, axis=0)
+            rmin, rmax = torch.where(rows)[0][[0, -1]]
+            cmin, cmax = torch.where(cols)[0][[0, -1]]
+            rmin = max(rmin - padding_top, 0)
+            rmax = min(rmax + padding_bottom, msk.shape[0] - 1)
+            cmin = max(cmin - padding_left, 0)
+            cmax = min(cmax + padding_right, msk.shape[1] - 1)
+            cropped_images.append(img[:, rmin:rmax + 1, cmin:cmax + 1, :])
+            bounds.append((rmin, rmax, cmin, cmax))
+        return (torch.cat(cropped_images, dim=0), bounds)
 
-        # Extract the target bounds
-        rmin, rmax, cmin, cmax = target_bounds
-
-        result_tensors = []
-        for source_pil in source_pils:
-            # Create a blank image with the same size and mode as the target
-            source_positioned = Image.new(target_pil.mode, target_pil.size)
-
-            # Paste the source image onto the blank image using the target bounds
-            source_positioned.paste(source_pil, (cmin, rmin))
-
-            # Create a blend mask using the target mask and blend factor
-            blend_mask = target_mask_pil.point(lambda p: p * blend_factor).convert('L')
-
-            # Apply feathering (Gaussian blur) to the blend mask if feather_amount is greater than 0
-            if feathering > 0:
-                blend_mask = blend_mask.filter(ImageFilter.GaussianBlur(radius=feathering))
-
-            # Blend the source and target images using the blend mask
-            result = Image.composite(source_positioned, target_pil, blend_mask)
-
-            # Convert the result back to a PyTorch tensor
-            result_tensors.append(torch.from_numpy(np.array(result).astype(np.float32) / 255).unsqueeze(0))
-
-        result_tensor = torch.cat(result_tensors, dim=0)
-        return (result_tensor,)
-
-
-# WAS BOUNDED IMAGE CROP WITH MASK
 class WAS_Bounded_Image_Crop_With_Mask:
     def __init__(self):
         pass
@@ -11406,26 +11432,36 @@ class WAS_Bounded_Image_Crop_With_Mask:
     CATEGORY = "WAS Suite/Image/Bound"
     
     def bounded_image_crop_with_mask(self, image, mask, padding_left, padding_right, padding_top, padding_bottom):
-        # Get the bounding box coordinates of the mask
-        rows = torch.any(mask, axis=1)
-        cols = torch.any(mask, axis=0)
+        is_batch = len(mask.shape) == 3
+        if is_batch:
+            cropped_images = []
+            all_bounds = []
+            for i in range(mask.shape[0]):
+                single_mask = mask[i]
+                single_image, bounds = self._crop_single_image(image, single_mask, padding_left, padding_right, padding_top, padding_bottom)
+                cropped_images.append(single_image)
+                all_bounds.append(bounds)
+            return torch.stack(cropped_images), all_bounds
+        else:
+            single_image, bounds = self._crop_single_image(image, mask, padding_left, padding_right, padding_top, padding_bottom)
+            return single_image, bounds
+
+    def _crop_single_image(self, image, mask, padding_left, padding_right, padding_top, padding_bottom):
+        rows = torch.any(mask, dim=1)
+        cols = torch.any(mask, dim=0)
         rmin, rmax = torch.where(rows)[0][[0, -1]]
         cmin, cmax = torch.where(cols)[0][[0, -1]]
-        
-        # Apply padding
+
         rmin = max(rmin - padding_top, 0)
         rmax = min(rmax + padding_bottom, mask.shape[0] - 1)
         cmin = max(cmin - padding_left, 0)
         cmax = min(cmax + padding_right, mask.shape[1] - 1)
         
         bounds = [rmin, rmax, cmin, cmax]
-        
-        # Crop the image using the computed coordinates and return it
-        return (image[:, rmin:rmax+1, cmin:cmax+1, :], bounds,)
-
+        return image[:, rmin:rmax+1, cmin:cmax+1, :], bounds
+    
 
 #! NUMBERS
-
 
 # RANDOM NUMBER
 
@@ -13207,6 +13243,7 @@ NODE_CLASS_MAPPINGS = {
     "Conditioning Input Switch": WAS_Conditioning_Input_Switch,
     "Constant Number": WAS_Constant_Number,
     "Create Grid Image": WAS_Image_Grid_Image,
+    "Create Grid Image from Batch": WAS_Image_Grid_Image_Batch,
     "Create Morph Image": WAS_Image_Morph_GIF, 
     "Create Morph Image from Path": WAS_Image_Morph_GIF_By_Path,
     "Create Video from Path": WAS_Create_Video_From_Path,
@@ -13348,8 +13385,6 @@ NODE_CLASS_MAPPINGS = {
     "SAM Parameters": WAS_SAM_Parameters,
     "SAM Parameters Combine": WAS_SAM_Combine_Parameters,
     "SAM Image Mask": WAS_SAM_Image_Mask,
-    #"LangSAM Model Loader": WAS_Lang_SAM_Model_Loader,
-    #"LangSAM Masking": WAS_Lang_SAM_Masking,
     "Samples Passthrough (Stat System)": WAS_Samples_Passthrough_Stat_System,
     "String to Text": WAS_String_To_Text,
     "Image Bounds": WAS_Image_Bounds,
