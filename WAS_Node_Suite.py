@@ -3562,12 +3562,14 @@ class WAS_Image_Paste_Crop_Location:
     CATEGORY = "WAS Suite/Image/Process"
     
     def image_paste_crop_location(self, image, crop_image, top=0, left=0, right=256, bottom=256, crop_blending=0.25, crop_sharpening=0):
-
         result_image, result_mask = self.paste_image(tensor2pil(image), tensor2pil(crop_image), top, left, right, bottom, crop_blending, crop_sharpening)
         return (result_image, result_mask)
     
     def paste_image(self, image, crop_image, top=0, left=0, right=256, bottom=256, blend_amount=0.25, sharpen_amount=1):
-    
+
+        image = image.convert("RGBA")
+        crop_image = crop_image.convert("RGBA")
+        
         def inset_border(image, border_width=20, border_color=(0)):
             width, height = image.size
             bordered_image = Image.new(image.mode, (width, height), border_color)
@@ -3575,7 +3577,7 @@ class WAS_Image_Paste_Crop_Location:
             draw = ImageDraw.Draw(bordered_image)
             draw.rectangle((0, 0, width-1, height-1), outline=border_color, width=border_width)
             return bordered_image
-    
+
         img_width, img_height = image.size
         
         # Ensure that the coordinates are within the image bounds
@@ -3585,9 +3587,9 @@ class WAS_Image_Paste_Crop_Location:
         right = min(max(right, 0), img_width)
         
         crop_size = (right - left, bottom - top)
-        crop_img = crop_image.convert("RGB")
-        crop_img = crop_img.resize(crop_size)
-            
+        crop_img = crop_image.resize(crop_size)
+        crop_img = crop_img.convert("RGBA")
+
         if sharpen_amount > 0:
             for _ in range(sharpen_amount):
                 crop_img = crop_img.filter(ImageFilter.SHARPEN)
@@ -3598,22 +3600,23 @@ class WAS_Image_Paste_Crop_Location:
             blend_amount = 0.0
         blend_ratio = (max(crop_size) / 2) * float(blend_amount)
 
-        blend = image.convert("RGBA")
+        blend = image.copy()
         mask = Image.new("L", image.size, 0)
         
         mask_block = Image.new("L", crop_size, 255)
         mask_block = inset_border(mask_block, int(blend_ratio/2), (0))
      
         Image.Image.paste(mask, mask_block, (left, top))
-        Image.Image.paste(blend, crop_img, (left, top))
-
+        blend.paste(crop_img, (left, top), crop_img)
+        
         mask = mask.filter(ImageFilter.BoxBlur(radius=blend_ratio/4))
         mask = mask.filter(ImageFilter.GaussianBlur(radius=blend_ratio/4))
-
+        
         blend.putalpha(mask)
-        image = Image.alpha_composite(image.convert("RGBA"), blend)
+        image = Image.alpha_composite(image, blend)
             
-        return (pil2tensor(image.convert('RGB')), pil2tensor(mask.convert('RGB'))) 
+        return (pil2tensor(image), pil2tensor(mask.convert('RGB')))
+    
 
 # IMAGE GRID IMAGE
 
@@ -3628,7 +3631,7 @@ class WAS_Image_Grid_Image_Batch:
                 "images": ("IMAGE",),
                 "border_width": ("INT", {"default":3, "min": 0, "max": 100, "step":1}),
                 "number_of_columns": ("INT", {"default":6, "min": 1, "max": 24, "step":1}),
-                "max_cell_size": ("INT", {"default":256, "min":32, "max":1280, "step":1}),
+                "max_cell_size": ("INT", {"default":256, "min":32, "max":2048, "step":1}),
                 "border_red": ("INT", {"default":0, "min": 0, "max": 255, "step":1}),
                 "border_green": ("INT", {"default":0, "min": 0, "max": 255, "step":1}),
                 "border_blue": ("INT", {"default":0, "min": 0, "max": 255, "step":1}),
@@ -3643,58 +3646,55 @@ class WAS_Image_Grid_Image_Batch:
     def smart_grid_image(self, images, number_of_columns=6, max_cell_size=256, add_border=False, border_red=255, border_green=255, border_blue=255, border_width=3):
         
         cols = number_of_columns
-        size = (max_cell_size, max_cell_size)
         border_color = (border_red, border_green, border_blue)
 
-        max_width, max_height = size
-        row_height = 0
         images_resized = []
+        max_row_height = 0
+        
         for tensor_img in images:
             img = tensor2pil(tensor_img)
-            
             img_w, img_h = img.size
             aspect_ratio = img_w / img_h
-            if aspect_ratio > 1:  # landscape
-                thumb_w = min(max_width, img_w - border_width)
-                thumb_h = thumb_w / aspect_ratio
-            else:  # portrait
-                thumb_h = min(max_height, img_h - border_width)
-                thumb_w = thumb_h * aspect_ratio
 
-            pad_w = max_width - int(thumb_w)
-            pad_h = max_height - int(thumb_h)
-            left = pad_w // 2
-            top = pad_h // 2
-            right = pad_w - left
-            bottom = pad_h - top
-            padding = (left, top, right, bottom)
-            img_resized = ImageOps.expand(img.resize((int(thumb_w), int(thumb_h))), padding)
+            if img_w > img_h:
+                cell_w = min(img_w, max_cell_size)
+                cell_h = int(cell_w / aspect_ratio)
+            else:
+                cell_h = min(img_h, max_cell_size)
+                cell_w = int(cell_h * aspect_ratio)
+            
+            img_resized = img.resize((cell_w, cell_h))
 
             if add_border:
                 img_resized = ImageOps.expand(img_resized, border=border_width // 2, fill=border_color)
 
             images_resized.append(img_resized)
-            row_height = max(row_height, img_resized.size[1])
-        
-        row_height = int(row_height)
-
+            max_row_height = max(max_row_height, cell_h)
+            
+        max_row_height = int(max_row_height)
         total_images = len(images_resized)
         rows = math.ceil(total_images / cols)
-        new_image = Image.new('RGB', (cols * size[0] + (cols - 1) * border_width,
-                                      rows * row_height + (rows - 1) * border_width), border_color)
+
+        grid_width = cols * max_cell_size + (cols - 1) * border_width
+        grid_height = rows * max_row_height + (rows - 1) * border_width
+        
+        new_image = Image.new('RGB', (grid_width, grid_height), border_color)
 
         for i, img in enumerate(images_resized):
-            x = (i % cols) * (size[0] + border_width)
-            y = (i // cols) * (row_height + border_width)
-            if img.size == (size[0], size[1]):
-                new_image.paste(img, (x, y, x + img.size[0], y + img.size[1]))
-            else:
-                img = img.resize((size[0], size[1]))
-                new_image.paste(img, (x, y, x + size[0], y + size[1]))
-        
-        new_image = ImageOps.expand(new_image, border=border_width, fill=border_color)
+            x = (i % cols) * (max_cell_size + border_width)
+            y = (i // cols) * (max_row_height + border_width)
+            
+            img_w, img_h = img.size
+            paste_x = x + (max_cell_size - img_w) // 2
+            paste_y = y + (max_row_height - img_h) // 2
+
+            new_image.paste(img, (paste_x, paste_y, paste_x + img_w, paste_y + img_h))
+
+        if add_border:
+            new_image = ImageOps.expand(new_image, border=border_width, fill=border_color)
 
         return (pil2tensor(new_image), )
+
 
 # IMAGE GRID IMAGE FROM PATH
 
@@ -3897,7 +3897,7 @@ class WAS_Image_Morph_GIF_Writer:
                 "duration_ms": ("FLOAT", {"default":0.1, "min":0.1, "max":60000.0, "step":0.1}),
                 "loops": ("INT", {"default":0, "min":0, "max":100, "step":1}),
                 "max_size": ("INT", {"default":512, "min":128, "max":1280, "step":1}),
-                "output_path": ("STRING", {"default": "./ComfyUI/output", "multiline": False}),
+                "output_path": ("STRING", {"default": comfy_paths.output_directory, "multiline": False}),
                 "filename": ("STRING", {"default": "morph_writer", "multiline": False}),
             }
         }
@@ -3907,23 +3907,23 @@ class WAS_Image_Morph_GIF_Writer:
         return float("NaN")
         
     RETURN_TYPES = ("IMAGE",TEXT_TYPE,TEXT_TYPE)
-    RETURN_NAMES = ("IMAGE_PASS","filepath_text","filename_text")
+    RETURN_NAMES = ("image_pass","filepath_text","filename_text")
     FUNCTION = "write_to_morph_gif"
     
     CATEGORY = "WAS Suite/Animation/Writer"
     
     def write_to_morph_gif(self, image, transition_frames=10, image_delay_ms=10, duration_ms=0.1, loops=0, max_size=512, 
                             output_path="./ComfyUI/output", filename="morph"):
-                
+        
         if 'imageio' not in packages():
             install_package("imageio")
         
         if output_path.strip() in [None, "", "."]:
             output_path = "./ComfyUI/output"
-            
-        if image == None:
-            image = pil2tensor(Image.new("RGB", (512,512), (0,0,0)))
-            
+        
+        if image is None:
+            image = pil2tensor(Image.new("RGB", (512, 512), (0, 0, 0))).unsqueeze(0)
+        
         if transition_frames < 2:
             transition_frames = 2
         elif transition_frames > 60:
@@ -3936,16 +3936,19 @@ class WAS_Image_Morph_GIF_Writer:
             
         tokens = TextTokens()
         output_path = os.path.abspath(os.path.join(*tokens.parseTokens(output_path).split('/')))
-        output_file = os.path.join(output_path, tokens.parseTokens(filename)+'.gif')
+        output_file = os.path.join(output_path, tokens.parseTokens(filename) + '.gif')
         
         if not os.path.exists(output_path):
             os.makedirs(output_path, exist_ok=True)
         
         WTools = WAS_Tools_Class()
         GifMorph = WTools.GifMorphWriter(int(transition_frames), int(duration_ms), int(image_delay_ms))
-        GifMorph.write(tensor2pil(image), output_file)
         
-        return (image, output_file, filename)        
+        for img in image:
+            pil_img = tensor2pil(img)
+            GifMorph.write(pil_img, output_file)
+        
+        return (image, output_file, filename)    
 
 # IMAGE MORPH GIF BY PATH
 
