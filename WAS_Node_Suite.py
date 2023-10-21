@@ -7519,6 +7519,11 @@ class WAS_Mask_To_Image:
             tensor = masks.permute(0, 2, 3, 1)
             tensor_rgb = torch.cat([tensor] * 3, dim=-1)
             return (tensor_rgb,)
+        elif masks.ndim == 3:
+            # If Input has shape [N, H, W]
+            tensor = masks.unsqueeze(-1)
+            tensor_rgb = torch.cat([tensor] * 3, dim=-1)
+            return (tensor_rgb, )
         elif masks.ndim == 2:
             # If input has shape [H, W]
             tensor = masks.unsqueeze(0).unsqueeze(-1)
@@ -11421,8 +11426,8 @@ class WAS_Bounded_Image_Blend_With_Mask:
     def INPUT_TYPES(self):
         return {
             "required": {
-                "image": ("IMAGE",),
-                "mask": ("MASK",),
+                "target": ("IMAGE",),
+                "target_mask": ("MASK",),
                 "target_bounds": ("IMAGE_BOUNDS",),
                 "source": ("IMAGE",),
                 "blend_factor": ("FLOAT", {"default": 1.0, "min": 0.0, "max": 1.0}),
@@ -11543,7 +11548,7 @@ class WAS_Random_Number:
                 return
 
         # Return number
-        return (number, float(number), int(number))
+        return (number, float(number), round(number))
         
     @classmethod
     def IS_CHANGED(cls, seed, **kwargs):
@@ -11917,7 +11922,7 @@ class WAS_Boolean:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "boolean_number": ("INT", {"default":1, "min":0, "max":1, "step":1}),
+                "boolean_number": ("FLOAT", {"default":1, "min":0, "max":1, "step":1}),
             }
         }
 
