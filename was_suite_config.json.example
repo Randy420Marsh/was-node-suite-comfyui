@@ -18,6 +18,6 @@
         "avc1": ".mp4",
         "h264": ".mkv"
     },
-    "wildcards_path": "C:\\AI\\ComfyUI\\wildcards",
+    "wildcards_path": "C:\\AI\\ComfyUI-dev\\wildcards",
     "wildcard_api": true
 }
