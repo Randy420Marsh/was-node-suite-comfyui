@@ -827,8 +827,8 @@ class TextTokens:
         if not self.WDB.getDB().__contains__('custom_tokens'):
             self.WDB.insertCat('custom_tokens')
         self.custom_tokens = self.WDB.getDict('custom_tokens')
-                
-        self.tokens =  {
+        
+        self.tokens = {
             '[time]': str(time.time()).replace('.','_'),
             '[hostname]': socket.gethostname(),
         }
@@ -837,24 +837,23 @@ class TextTokens:
             self.tokens['[time]'] = self.tokens['[time]'].split('.')[0]
 
         try:
-            self.tokens['[user]'] = ( os.getlogin() if os.getlogin() else 'null' )
+            self.tokens['[user]'] = os.getlogin() if os.getlogin() else 'null'
         except Exception:
             self.tokens['[user]'] = 'null'
-                
+
     def addToken(self, name, value):
         self.custom_tokens.update({name: value})
         self._update()
-                
-    def removeToken (self, name):
+
+    def removeToken(self, name):
         self.custom_tokens.pop(name)
         self._update()
-        
+
     def format_time(self, format_code):
         return time.strftime(format_code, time.localtime(time.time()))
-        
+
     def parseTokens(self, text):
         tokens = self.tokens.copy()
-
         if self.custom_tokens:
             tokens.update(self.custom_tokens)
 
@@ -866,7 +865,8 @@ class TextTokens:
         for token, value in tokens.items():
             if token.startswith('[time('):
                 continue
-            text = text.replace(token, value)
+            pattern = re.compile(r'\b' + re.escape(token) + r'\b')
+            text = pattern.sub(value, text)
 
         def replace_custom_time(match):
             format_code = match.group(1)
@@ -875,7 +875,7 @@ class TextTokens:
         text = re.sub(r'\[time\((.*?)\)\]', replace_custom_time, text)
 
         return text
-                
+
     def _update(self):
         self.WDB.updateCat('custom_tokens', self.custom_tokens)
         
@@ -5116,7 +5116,7 @@ class WAS_Load_Image_Batch:
             self.label = label
 
         def load_images(self, directory_path, pattern):
-            for file_name in glob.glob(os.path.join(directory_path, pattern), recursive=True):
+            for file_name in glob.glob(os.path.join(glob.escape(directory_path), pattern), recursive=True):
                 if file_name.lower().endswith(ALLOWED_EXT):
                     abs_file_path = os.path.abspath(file_name)
                     self.image_paths.append(abs_file_path)
@@ -5916,43 +5916,31 @@ class WAS_Image_High_Pass_Filter:
     CATEGORY = "WAS Suite/Image/Filter"
 
     def high_pass(self, images, radius=10, strength=1.5, color_output="true", neutral_background="true"):
-    
         batch_tensor = []
         for image in images:
-            batch_tensor.append(pil2tensor(self.apply_hpf(tensor2pil(image), radius, strength, color_output, neutral_background)))
+            transformed_image = self.apply_hpf(tensor2pil(image), radius, strength, color_output, neutral_background)
+            batch_tensor.append(pil2tensor(transformed_image))
         batch_tensor = torch.cat(batch_tensor, dim=0)
-        
         return (batch_tensor, )
 
     def apply_hpf(self, img, radius=10, strength=1.5, color_output="true", neutral_background="true"):
-        # PIL to numpy
         img_arr = np.array(img).astype('float')
-
-        # Apply a Gaussian blur with the given radius
-        blurred_arr = np.array(img.filter(
-            ImageFilter.GaussianBlur(radius=radius))).astype('float')
-
-        # Apply the High Pass Filter
+        blurred_arr = np.array(img.filter(ImageFilter.GaussianBlur(radius=radius))).astype('float')
         hpf_arr = img_arr - blurred_arr
         hpf_arr = np.clip(hpf_arr * strength, 0, 255).astype('uint8')
 
         if color_output == "true":
-            # Create a color high pass image by applying the HPF to each channel separately
-            r = Image.fromarray(hpf_arr[:, :, 0], mode='L')
-            g = Image.fromarray(hpf_arr[:, :, 1], mode='L')
-            b = Image.fromarray(hpf_arr[:, :, 2], mode='L')
-            high_pass = Image.merge('RGB', (r, g, b))
+            high_pass = Image.fromarray(hpf_arr, mode='RGB')
         else:
-            # Create a grayscale high pass image by converting the filtered array to mode 'L'
-            high_pass = Image.fromarray(hpf_arr, mode='L')
+            grayscale_arr = np.mean(hpf_arr, axis=2).astype('uint8')
+            high_pass = Image.fromarray(grayscale_arr, mode='L')
 
         if neutral_background == "true":
-            # Apply neutral background
-            neutral_bg = Image.new("RGB", high_pass.size, (128, 128, 128))
+            neutral_color = (128, 128, 128) if high_pass.mode == 'RGB' else 128
+            neutral_bg = Image.new(high_pass.mode, high_pass.size, neutral_color)
             high_pass = ImageChops.screen(neutral_bg, high_pass)
 
-        # Return the high pass image
-        return high_pass
+        return high_pass.convert("RGB")
 
 
 # IMAGE LEVELS NODE
