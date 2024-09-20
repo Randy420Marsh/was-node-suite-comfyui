@@ -331,7 +331,13 @@ if was_config.__contains__('webui_styles'):
 def packages(versions=False):
     import sys
     import subprocess
-    return [( r.decode().split('==')[0] if not versions else r.decode() ) for r in subprocess.check_output([sys.executable, '-s', '-m', 'pip', 'freeze']).split()]
+    try:
+        result = subprocess.check_output([sys.executable, '-m', 'pip', 'freeze'], stderr=subprocess.STDOUT)
+        lines = result.decode().splitlines()
+        return [line if versions else line.split('==')[0] for line in lines]
+    except subprocess.CalledProcessError as e:
+        print("An error occurred while fetching packages:", e.output.decode())
+        return []
 
 def install_package(package, uninstall_first: Union[List[str], str] = None):
     if os.getenv("WAS_BLOCK_AUTO_INSTALL", 'False').lower() in ('true', '1', 't'):
@@ -1922,36 +1928,44 @@ class WAS_Tools_Class():
         img = img.filter(ImageFilter.GaussianBlur(radius=blur))
 
         return img
-    
 
     # Version 2 optimized based on Mark Setchell's ideas
-    def gradient_map(self, image, gradient_map, reverse=False):
+    def gradient_map(self, image, gradient_map_input, reverse=False):
 
         # Reverse the image
         if reverse:
-            gradient_map = gradient_map.transpose(Image.FLIP_LEFT_RIGHT)
+            gradient_map_input = gradient_map_input.transpose(Image.FLIP_LEFT_RIGHT)
 
         # Convert image to Numpy array and average RGB channels
-        na = np.array(image)
-        grey = np.mean(na, axis=2).astype(np.uint8)
+        # grey = self.greyscale(np.array(image))
+        grey = np.array(image.convert('L'))
 
         # Convert gradient map to Numpy array
-        cmap = np.array(gradient_map.convert('RGB'))
+        cmap = np.array(gradient_map_input.convert('RGB'))
 
-        # Make output image, same height and width as grey image, but 3-channel RGB
-        result = np.zeros((*grey.shape, 3), dtype=np.uint8)
+        # smush the map into the proper size -- 256 gradient colors
+        cmap = cv2.resize(cmap, (256, 256))
 
-        # Reshape grey to match the shape of result
-        grey_reshaped = grey.reshape(-1)
+        # lop off a single row for the LUT mapper
+        cmap = cmap[0,:,:].reshape((256, 1, 3)).astype(np.uint8)
 
-        # Take entries from RGB gradient map according to grayscale values in image
-        np.take(cmap.reshape(-1, 3), grey_reshaped, axis=0, out=result.reshape(-1, 3))
+        # map with our "custom" LUT
+        result = cv2.applyColorMap(grey, cmap)
 
         # Convert result to PIL image
-        result_image = Image.fromarray(result)
+        return Image.fromarray(result)
 
-        return result_image
-
+    def greyscale(self, image):
+        if image.dtype in [np.float16, np.float32, np.float64]:
+            image = np.clip(image * 255, 0, 255).astype(np.uint8)
+        cc = image.shape[2] if image.ndim == 3 else 1
+        if cc == 1:
+            return image
+        typ = cv2.COLOR_BGR2HSV
+        if cc == 4:
+            typ = cv2.COLOR_BGRA2GRAY
+        image = cv2.cvtColor(image, typ)[:,:,2]
+        return np.expand_dims(image, -1)
 
     # Generate Perlin Noise (Finally in house version)
 
@@ -2817,7 +2831,7 @@ class WAS_Image_Filters:
                     pil_image = pil_image.filter(ImageFilter.DETAIL)
 
                 # Output image
-                out_image = (pil2tensor(pil_image) if pil_image else img)
+                out_image = (pil2tensor(pil_image) if pil_image else img.unsqueeze(0))
 
                 tensors.append(out_image)
 
@@ -4879,7 +4893,131 @@ class WAS_Image_Color_Palette:
             return (pil2tensor(palette_image), [palette,])
 
 
+# HEX TO HSL
+
+class WAS_Hex_to_HSL:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "hex_color": ("STRING", {"default": "#FF0000"}),
+            },
+            "optional": {
+                "include_alpha": ("BOOLEAN", {"default": False})
+            }
+        }
+
+    RETURN_TYPES = ("INT", "INT", "INT", "FLOAT", "STRING")
+    RETURN_NAMES = ("hue", "saturation", "lightness", "alpha", "hsl")
+
+    FUNCTION = "hex_to_hsl"
+    CATEGORY = "WAS Suite/Utilities"
+
+    @staticmethod
+    def hex_to_hsl(hex_color, include_alpha=False):
+        if hex_color.startswith("#"):
+            hex_color = hex_color[1:]
+
+        red = int(hex_color[0:2], 16) / 255.0
+        green = int(hex_color[2:4], 16) / 255.0
+        blue = int(hex_color[4:6], 16) / 255.0
+        alpha = int(hex_color[6:8], 16) / 255.0 if include_alpha and len(hex_color) == 8 else 1.0
+        max_val = max(red, green, blue)
+        min_val = min(red, green, blue)
+        delta = max_val - min_val
+        luminance = (max_val + min_val) / 2.0
+
+        if delta == 0:
+            hue = 0
+            saturation = 0
+        else:
+            saturation = delta / (1 - abs(2 * luminance - 1))
+            if max_val == red:
+                hue = ((green - blue) / delta) % 6
+            elif max_val == green:
+                hue = (blue - red) / delta + 2
+            elif max_val == blue:
+                hue = (red - green) / delta + 4
+            hue *= 60
+            if hue < 0:
+                hue += 360
+
+        luminance = luminance * 100
+        saturation = saturation * 100
+
+        hsl_string = f'hsl({round(hue)}, {round(saturation)}%, {round(luminance)}%)' if not include_alpha else f'hsla({round(hue)}, {round(saturation)}%, {round(luminance)}%, {round(alpha, 2)})'
+        output = (round(hue), round(saturation), round(luminance), round(alpha, 2), hsl_string)
+
+        return output
+
+
+# HSL TO HEX
+
+
+class WAS_HSL_to_Hex:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "hsl_color": ("STRING", {"default": "hsl(0, 100%, 50%)"}),
+            }
+        }
+
+    RETURN_TYPES = ("STRING",)
+    RETURN_NAMES = ("hex_color",)
+
+    FUNCTION = "hsl_to_hex"
+    CATEGORY = "WAS Suite/Utilities"
+
+    @staticmethod
+    def hsl_to_hex(hsl_color):
+        import re
+
+        hsl_pattern = re.compile(r'hsla?\(\s*(\d+),\s*(\d+)%?,\s*(\d+)%?(?:,\s*([\d.]+))?\s*\)')
+        match = hsl_pattern.match(hsl_color)
+
+        if not match:
+            raise ValueError("Invalid HSL(A) color format")
+
+        h, s, l = map(int, match.groups()[:3])
+        a = float(match.groups()[3]) if match.groups()[3] else 1.0
+
+        s /= 100
+        l /= 100
+
+        c = (1 - abs(2 * l - 1)) * s
+        x = c * (1 - abs((h / 60) % 2 - 1))
+        m = l - c/2
+
+        if 0 <= h < 60:
+            r, g, b = c, x, 0
+        elif 60 <= h < 120:
+            r, g, b = x, c, 0
+        elif 120 <= h < 180:
+            r, g, b = 0, c, x
+        elif 180 <= h < 240:
+            r, g, b = 0, x, c
+        elif 240 <= h < 300:
+            r, g, b = x, 0, c
+        elif 300 <= h < 360:
+            r, g, b = c, 0, x
+        else:
+            r, g, b = 0, 0, 0
+
+        r = int((r + m) * 255)
+        g = int((g + m) * 255)
+        b = int((b + m) * 255)
+        alpha = int(a * 255)
+
+        hex_color = f'#{r:02X}{g:02X}{b:02X}'
+        if a < 1:
+            hex_color += f'{alpha:02X}'
+
+        return (hex_color,)
+
+
 # IMAGE ANALYZE
+
 
 class WAS_Image_Analyze:
     def __init__(self):
@@ -5362,7 +5500,7 @@ class WAS_Image_Padding:
 
     def image_padding(self, image, feathering, left_padding, right_padding, top_padding, bottom_padding, feather_second_pass=True):
         padding = self.apply_image_padding(tensor2pil(
-            image), left_padding, right_padding, top_padding, bottom_padding, feathering, second_pass=True)
+            image), left_padding, right_padding, top_padding, bottom_padding, feathering, second_pass=feather_second_pass)
         return (pil2tensor(padding[0]), pil2tensor(padding[1]))
 
     def apply_image_padding(self, image, left_pad=100, right_pad=100, top_pad=100, bottom_pad=100, feather_radius=50, second_pass=True):
@@ -5458,7 +5596,10 @@ class WAS_Image_Threshold:
     CATEGORY = "WAS Suite/Image/Process"
 
     def image_threshold(self, image, threshold=0.5):
-        return (pil2tensor(self.apply_threshold(tensor2pil(image), threshold)), )
+        images = []
+        for img in image:
+            images.append(pil2tensor(self.apply_threshold(tensor2pil(img), threshold)))
+        return (torch.cat(images, dim=0), )
 
     def apply_threshold(self, input_image, threshold=0.5):
         # Convert the input image to grayscale
@@ -6074,16 +6215,19 @@ class WAS_Image_Levels:
 
         def adjust(self, im):
 
-            im_arr = np.array(im)
+            im_arr = np.array(im).astype(np.float32)
             im_arr[im_arr < self.min_level] = self.min_level
             im_arr = (im_arr - self.min_level) * \
                 (255 / (self.max_level - self.min_level))
-            im_arr[im_arr < 0] = 0
-            im_arr[im_arr > 255] = 255
+            im_arr = np.clip(im_arr, 0, 255)
+
+            # mid-level adjustment
+            gamma = math.log(0.5) / math.log((self.mid_level - self.min_level) / (self.max_level - self.min_level))
+            im_arr = np.power(im_arr / 255, gamma) * 255
+
             im_arr = im_arr.astype(np.uint8)
 
             im = Image.fromarray(im_arr)
-            im = ImageOps.autocontrast(im, cutoff=self.max_level)
 
             return im
 
@@ -7165,7 +7309,9 @@ class WAS_Image_Save:
             },
         }
 
-    RETURN_TYPES = ()
+    RETURN_TYPES = ("IMAGE", "STRING",)
+    RETURN_NAMES = ("images", "files",)
+
     FUNCTION = "was_save_images"
 
     OUTPUT_NODE = True
@@ -7240,6 +7386,7 @@ class WAS_Image_Save:
             file_extension = "png"
 
         results = list()
+        output_files = list()
         for image in images:
             i = 255. * image.cpu().numpy()
             img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
@@ -7247,15 +7394,16 @@ class WAS_Image_Save:
             # Delegate metadata/pnginfo
             if extension == 'webp':
                 img_exif = img.getexif()
-                workflow_metadata = ''
-                prompt_str = ''
-                if prompt is not None:
-                    prompt_str = json.dumps(prompt)
-                    img_exif[0x010f] = "Prompt:" + prompt_str
-                if extra_pnginfo is not None:
-                    for x in extra_pnginfo:
-                        workflow_metadata += json.dumps(extra_pnginfo[x])
-                img_exif[0x010e] = "Workflow:" + workflow_metadata
+                if embed_workflow == 'true':
+                    workflow_metadata = ''
+                    prompt_str = ''
+                    if prompt is not None:
+                        prompt_str = json.dumps(prompt)
+                        img_exif[0x010f] = "Prompt:" + prompt_str
+                    if extra_pnginfo is not None:
+                        for x in extra_pnginfo:
+                            workflow_metadata += json.dumps(extra_pnginfo[x])
+                    img_exif[0x010e] = "Workflow:" + workflow_metadata
                 exif_data = img_exif.tobytes()
             else:
                 metadata = PngInfo()
@@ -7300,6 +7448,7 @@ class WAS_Image_Save:
                              pnginfo=exif_data, optimize=optimize_image)
 
                 cstr(f"Image file saved to: {output_file}").msg.print()
+                output_files.append(output_file)
 
                 if show_history != 'true' and show_previews == 'true':
                     subfolder = self.get_subfolder_path(output_file, original_output)
@@ -7360,9 +7509,9 @@ class WAS_Image_Save:
                 results.append(image_data)
 
         if show_previews == 'true':
-            return {"ui": {"images": results}}
+            return {"ui": {"images": results, "files": output_files}, "result": (images, output_files,)}
         else:
-            return {"ui": {"images": []}}
+            return {"ui": {"images": []}, "result": (images, output_files,)}
 
     def get_subfolder_path(self, image_path, output_path):
         output_parts = output_path.strip(os.sep).split(os.sep)
@@ -7371,6 +7520,57 @@ class WAS_Image_Save:
         subfolder_parts = image_parts[len(common_parts):]
         subfolder_path = os.sep.join(subfolder_parts[:-1])
         return subfolder_path
+
+
+# Image Send HTTP
+# Sends images over http
+class WAS_Image_Send_HTTP:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "images": ("IMAGE",),
+                "url": ("STRING", {"default": "example.com"}),
+                "method_type": (["post", "put", "patch"], {"default": "post"}),
+                "request_field_name": ("STRING", {"default": "image"}),
+            },
+            "optional": {
+                "additional_request_headers": ("DICT",)
+            }
+        }
+
+    RETURN_TYPES = ("INT", "STRING")
+    RETURN_NAMES = ("status_code", "result_text")
+
+    FUNCTION = "was_send_images_http"
+    OUTPUT_NODE = True
+
+    CATEGORY = "WAS Suite/IO"
+
+    def was_send_images_http(self, images, url="example.com",
+                             method_type="post",
+                             request_field_name="image",
+                             additional_request_headers=None):
+        from io import BytesIO
+
+        images_to_send = []
+        for idx, image in enumerate(images):
+            i = 255. * image.cpu().numpy()
+            img = Image.fromarray(np.clip(i, 0, 255).astype(np.uint8))
+            byte_io = BytesIO()
+            img.save(byte_io, 'png')
+            byte_io.seek(0)
+            images_to_send.append(
+                (request_field_name, (f"image_{idx}.png", byte_io, "image/png"))
+            )
+        request = requests.Request(url=url, method=method_type.upper(),
+                                   headers=additional_request_headers,
+                                   files=images_to_send)
+        prepped = request.prepare()
+        session = requests.Session()
+
+        response = session.send(prepped)
+        return (response.status_code, response.text,)
 
 
 # LOAD IMAGE NODE
@@ -9504,7 +9704,7 @@ class WAS_Text_Multiline:
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "text": ("STRING", {"default": '', "multiline": True, "dynamicPrompts": False}),
+                "text": ("STRING", {"default": '', "multiline": True, "dynamicPrompts": True}),
             }
         }
     RETURN_TYPES = (TEXT_TYPE,)
@@ -9517,13 +9717,34 @@ class WAS_Text_Multiline:
         new_text = []
         for line in io.StringIO(text):
             if not line.strip().startswith('#'):
-                if not line.strip().startswith("\n"):
-                    line = line.replace("\n", '')
-                new_text.append(line)
+                new_text.append(line.replace("\n", ''))
         new_text = "\n".join(new_text)
 
         tokens = TextTokens()
         new_text = tokens.parseTokens(new_text)
+
+        return (new_text, )
+
+
+class WAS_Text_Multiline_Raw:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text": ("STRING", {"default": '', "multiline": True, "dynamicPrompts": False}),
+            }
+        }
+    RETURN_TYPES = (TEXT_TYPE,)
+    FUNCTION = "text_multiline"
+
+    CATEGORY = "WAS Suite/Text"
+
+    def text_multiline(self, text):
+        tokens = TextTokens()
+        new_text = tokens.parseTokens(text)
 
         return (new_text, )
 
@@ -9661,7 +9882,7 @@ class WAS_Text_Parse_Embeddings_By_Name:
         for embeddings_path in comfy_paths.folder_names_and_paths["embeddings"][0]:
             for filename in os.listdir(embeddings_path):
                 basename, ext = os.path.splitext(filename)
-                pattern = re.compile(r'\b{}\b'.format(re.escape(basename)))
+                pattern = re.compile(r'\b(?<!embedding:){}\b'.format(re.escape(basename)))
                 replacement = 'embedding:{}'.format(basename)
                 text = re.sub(pattern, replacement, text)
 
@@ -10075,10 +10296,6 @@ class WAS_Text_Random_Line:
         choice = random.choice(lines)
         return (choice, )
 
-    @classmethod
-    def IS_CHANGED(cls, **kwargs):
-        return float("NaN")
-
 
 # Text Concatenate
 
@@ -10094,23 +10311,23 @@ class WAS_Text_Concatenate:
                 "clean_whitespace": (["true", "false"],),
             },
             "optional": {
-                "text_a": (TEXT_TYPE, {"forceInput": (True if TEXT_TYPE == 'STRING' else False)}),
-                "text_b": (TEXT_TYPE, {"forceInput": (True if TEXT_TYPE == 'STRING' else False)}),
-                "text_c": (TEXT_TYPE, {"forceInput": (True if TEXT_TYPE == 'STRING' else False)}),
-                "text_d": (TEXT_TYPE, {"forceInput": (True if TEXT_TYPE == 'STRING' else False)}),
+                "text_a": ("STRING", {"forceInput": True}),
+                "text_b": ("STRING", {"forceInput": True}),
+                "text_c": ("STRING", {"forceInput": True}),
+                "text_d": ("STRING", {"forceInput": True}),
             }
         }
 
-    RETURN_TYPES = (TEXT_TYPE,)
+    RETURN_TYPES = ("STRING",)
     FUNCTION = "text_concatenate"
 
     CATEGORY = "WAS Suite/Text"
 
     def text_concatenate(self, delimiter, clean_whitespace, **kwargs):
-        text_inputs: list[str] = []
+        text_inputs = []
 
         # Handle special case where delimiter is "\n" (literal newline).
-        if delimiter == "\\n":
+        if delimiter in ("\n", "\\n"):
             delimiter = "\n"
 
         # Iterate over the received inputs in sorted order.
@@ -10136,6 +10353,7 @@ class WAS_Text_Concatenate:
         return (merged_text,)
 
 
+
 # Text Find
 
 
@@ -10154,8 +10372,8 @@ class WAS_Find:
             }
         }
 
-    RETURN_TYPES = ("BOOLEAN")
-    RETURN_NAMES = ("found")
+    RETURN_TYPES = ("BOOLEAN",)
+    RETURN_NAMES = ("found",)
     FUNCTION = "execute"
 
     CATEGORY = "WAS Suite/Text/Search"
@@ -10232,6 +10450,51 @@ class WAS_Text_Shuffle:
         return (new_text, )
 
 
+# Text Sort
+
+class WAS_Text_Sort:
+    def __init__(self):
+        pass
+
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "text": (TEXT_TYPE, {"forceInput": (True if TEXT_TYPE == 'STRING' else False)}),
+                "separator": ("STRING", {"default": ', ', "multiline": False}),
+            }
+        }
+
+    RETURN_TYPES = (TEXT_TYPE,)
+    FUNCTION = "sort"
+
+    CATEGORY = "WAS Suite/Text/Operations"
+
+    def sort(self, text, separator):
+        tokens = WAS_Text_Sort.split_using_protected_groups(text.strip(separator + " \t\n\r"), separator.strip())
+        sorted_tokens = sorted(tokens, key=WAS_Text_Sort.token_without_leading_brackets)
+        return (separator.join(sorted_tokens), )
+
+    @staticmethod
+    def token_without_leading_brackets(token):
+        return token.replace("\\(", "\0\1").replace("(", "").replace("\0\1", "(").strip()
+
+    @staticmethod
+    def split_using_protected_groups(text, separator):
+        protected_groups = ""
+        nesting_level = 0
+        for char in text:
+            if char == "(": nesting_level += 1
+            if char == ")": nesting_level -= 1
+
+            if char == separator and nesting_level > 0:
+                protected_groups += "\0"
+            else:
+                protected_groups += char
+
+        return list(map(lambda t: t.replace("\0", separator).strip(), protected_groups.split(separator)))
+
+
 
 # Text Search and Replace
 
@@ -10266,7 +10529,6 @@ class WAS_Search_and_Replace_Input:
     @classmethod
     def IS_CHANGED(cls, **kwargs):
         return float("NaN")
-
 
 
 # Text Search and Replace By Dictionary
@@ -10352,7 +10614,7 @@ class WAS_Text_Parse_NSP:
         return (new_text, )
 
 
-# TEXT SEARCH AND REPLACE
+# TEXT SAVE
 
 class WAS_Text_Save:
     def __init__(self):
@@ -10365,9 +10627,12 @@ class WAS_Text_Save:
                 "text": ("STRING", {"forceInput": True}),
                 "path": ("STRING", {"default": './ComfyUI/output/[time(%Y-%m-%d)]', "multiline": False}),
                 "filename_prefix": ("STRING", {"default": "ComfyUI"}),
-                "filename_delimiter": ("STRING", {"default":"_"}),
-                "filename_number_padding": ("INT", {"default":4, "min":0, "max":9, "step":1}),
-
+                "filename_delimiter": ("STRING", {"default": "_"}),
+                "filename_number_padding": ("INT", {"default": 4, "min": 0, "max": 9, "step": 1}),
+            },
+            "optional": {
+                "file_extension": ("STRING", {"default": ".txt"}),
+                "encoding": ("STRING", {"default": "utf-8"})
             }
         }
 
@@ -10376,8 +10641,7 @@ class WAS_Text_Save:
     FUNCTION = "save_text_file"
     CATEGORY = "WAS Suite/IO"
 
-    def save_text_file(self, text, path, filename_prefix='ComfyUI', filename_delimiter='_', filename_number_padding=4):
-
+    def save_text_file(self, text, path, filename_prefix='ComfyUI', filename_delimiter='_', filename_number_padding=4, file_extension='.txt', encoding='utf-8'):
         tokens = TextTokens()
         path = tokens.parseTokens(path)
         filename_prefix = tokens.parseTokens(filename_prefix)
@@ -10394,54 +10658,40 @@ class WAS_Text_Save:
 
         delimiter = filename_delimiter
         number_padding = int(filename_number_padding)
-        file_extension = '.txt'
         filename = self.generate_filename(path, filename_prefix, delimiter, number_padding, file_extension)
         file_path = os.path.join(path, filename)
-
-        self.writeTextFile(file_path, text)
-
+        self.write_text_file(file_path, text, encoding)
         update_history_text_files(file_path)
-
-        return (text, { "ui": { "string": text } } )
+        return (text, {"ui": {"string": text}})
 
     def generate_filename(self, path, prefix, delimiter, number_padding, extension):
-        # Adjust the regex pattern to match one or more digits without fixed padding
-        pattern = f"{re.escape(prefix)}{re.escape(delimiter)}(\\d+)"
-        existing_counters = [
-            int(re.search(pattern, filename).group(1))
-            for filename in os.listdir(path)
-            if re.match(pattern, filename)
-        ]
-        existing_counters.sort(reverse=True)
-
-        if existing_counters:
-            counter = existing_counters[0] + 1
+        if number_padding == 0:
+            # If number_padding is 0, don't use a numerical suffix
+            filename = f"{prefix}{extension}"
         else:
-            counter = 1
-
-        # Adjust the format string based on number_padding
-        if number_padding > 0:
-            filename = f"{prefix}{delimiter}{counter:0{number_padding}}{extension}"
-        else:
-            filename = f"{prefix}{delimiter}{counter}{extension}"
-
-        # Ensure the generated filename does not already exist
-        while os.path.exists(os.path.join(path, filename)):
-            counter += 1
-            if number_padding > 0:
-                filename = f"{prefix}{delimiter}{counter:0{number_padding}}{extension}"
+            pattern = f"{re.escape(prefix)}{re.escape(delimiter)}(\\d{{{number_padding}}})"
+            existing_counters = [
+                int(re.search(pattern, filename).group(1))
+                for filename in os.listdir(path)
+                if re.match(pattern, filename)
+            ]
+            existing_counters.sort(reverse=True)
+            if existing_counters:
+                counter = existing_counters[0] + 1
             else:
-                filename = f"{prefix}{delimiter}{counter}{extension}"
-
+                counter = 1
+            filename = f"{prefix}{delimiter}{counter:0{number_padding}}{extension}"
+            while os.path.exists(os.path.join(path, filename)):
+                counter += 1
+                filename = f"{prefix}{delimiter}{counter:0{number_padding}}{extension}"
         return filename
 
-    def writeTextFile(self, file, content):
+    def write_text_file(self, file, content, encoding):
         try:
-            with open(file, 'w', encoding='utf-8', newline='\n') as f:
+            with open(file, 'w', encoding=encoding, newline='\n') as f:
                 f.write(content)
         except OSError:
             cstr(f"Unable to save file `{file}`").error.print()
-
 
 
 # TEXT FILE HISTORY NODE
@@ -10495,8 +10745,6 @@ class WAS_Text_File_History:
         lines = []
         for line in io.StringIO(text):
             if not line.strip().startswith('#'):
-                if not line.strip().startswith("\n"):
-                    line = line.replace("\n", '')
                 lines.append(line.replace("\n",''))
         dictionary = {filename: lines}
 
@@ -10756,11 +11004,7 @@ class WAS_Text_Load_From_File:
         lines = []
         for line in io.StringIO(text):
             if not line.strip().startswith('#'):
-                if ( not line.strip().startswith("\n")
-                    or not line.strip().startswith("\r")
-                    or not line.strip().startswith("\r\n") ):
-                    line = line.replace("\n", '').replace("\r",'').replace("\r\n",'')
-                lines.append(line.replace("\n",'').replace("\r",'').replace("\r\n",''))
+                lines.append(line.replace("\n",'').replace("\r",''))
         dictionary = {filename: lines}
 
         return ("\n".join(lines), dictionary)
@@ -10852,15 +11096,16 @@ class WAS_Text_Load_Line_From_File:
             self.file_path = file_path
             self.lines = []
             self.index = 0
-            self.load_file(file_path, label)
+            self.label = label
+            self.load_file(file_path)
 
-        def load_file(self, file_path, label):
-            stored_file_path = self.WDB.get('TextBatch Paths', label)
-            stored_index = self.WDB.get('TextBatch Counters', label)
+        def load_file(self, file_path):
+            stored_file_path = self.WDB.get('TextBatch Paths', self.label)
+            stored_index = self.WDB.get('TextBatch Counters', self.label)
             if stored_file_path != file_path:
                 self.index = 0
-                self.WDB.insert('TextBatch Counters', label, 0)
-                self.WDB.insert('TextBatch Paths', label, file_path)
+                self.WDB.insert('TextBatch Counters', self.label, 0)
+                self.WDB.insert('TextBatch Paths', self.label, file_path)
             else:
                 self.index = stored_index
             with open(file_path, 'r', encoding="utf-8", newline='\n') as file:
@@ -10871,7 +11116,7 @@ class WAS_Text_Load_Line_From_File:
 
         def set_line_index(self, index):
             self.index = index
-            self.WDB.insert('TextBatch Counters', 'TextBatch', self.index)
+            self.WDB.insert('TextBatch Counters', self.label, self.index)
 
         def get_next_line(self):
             if self.index >= len(self.lines):
@@ -10893,7 +11138,7 @@ class WAS_Text_Load_Line_From_File:
             return line, self.lines
 
         def store_index(self):
-            self.WDB.insert('TextBatch Counters', 'TextBatch', self.index)
+            self.WDB.insert('TextBatch Counters', self.label, self.index)
 
 
 class WAS_Text_To_String:
@@ -10934,7 +11179,7 @@ class WAS_Text_To_Number:
     CATEGORY = "WAS Suite/Text/Operations"
 
     def text_to_number(self, text):
-        if text.replace(".", "").isnumeric():
+        if "." in text:
             number = float(text)
         else:
             number = int(text)
@@ -11075,9 +11320,7 @@ class WAS_BLIP_Analyze_Image:
 
         captions = []
         for image in images:
-            
             pil_image = tensor2pil(image).convert("RGB")
-            
             if mode == "caption":
                 cap = blip_model.generate_caption(image=pil_image, min_length=min_length, max_length=max_length, num_beams=num_beams, no_repeat_ngram_size=no_repeat_ngram_size, early_stopping=early_stopping)
                 captions.append(cap)
@@ -11135,7 +11378,7 @@ class WAS_CLIPSeg:
         return {
             "required": {
                 "image": ("IMAGE",),
-                "text": ("STRING", {"default":"", "multiline": False}),
+                "text": ("STRING", {"default": "", "multiline": False}),
             },
             "optional": {
                 "clipseg_model": ("CLIPSEG_MODEL",),
@@ -11151,7 +11394,8 @@ class WAS_CLIPSeg:
     def CLIPSeg_image(self, image, text=None, clipseg_model=None):
         from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
 
-        image = tensor2pil(image)
+        B, H, W, C = image.shape
+
         cache = os.path.join(MODELS_DIR, 'clipseg')
 
         if clipseg_model:
@@ -11161,16 +11405,192 @@ class WAS_CLIPSeg:
             inputs = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined", cache_dir=cache)
             model = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined", cache_dir=cache)
 
+        if B == 1:
+            image = tensor2pil(image)
+            with torch.no_grad():
+                result = model(**inputs(text=text, images=image, padding=True, return_tensors="pt"))
+
+            tensor = torch.sigmoid(result[0])
+            mask = 1. - (tensor - tensor.min()) / tensor.max()
+            mask = mask.unsqueeze(0)
+            mask = tensor2pil(mask).convert("L")
+            mask = mask.resize(image.size)
+
+            return (pil2mask(mask), pil2tensor(ImageOps.invert(mask.convert("RGB"))))
+        else:
+            import torchvision
+            with torch.no_grad():
+                image = image.permute(0, 3, 1, 2)
+                image = image * 255
+                result = model(**inputs(text=[text] * B, images=image, padding=True, return_tensors="pt"))
+                t = torch.sigmoid(result[0])
+                mask = (t - t.min()) / t.max()
+                mask = torchvision.transforms.functional.resize(mask, (H, W))
+                mask: torch.tensor = mask.unsqueeze(-1)
+                mask_img = mask.repeat(1, 1, 1, 3)
+            return (mask, mask_img,)
+class CLIPSeg2:
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "image": ("IMAGE",),
+                "text": ("STRING", {"default": "", "multiline": False}),
+                "use_cuda": ("BOOLEAN", {"default": False}),
+            },
+            "optional": {
+                "clipseg_model": ("CLIPSEG_MODEL",),
+            }
+        }
+
+    RETURN_TYPES = ("IMAGE",)
+    FUNCTION = "apply_transform"
+
+    CATEGORY = "image/transformation"
+
+    def apply_transform(self, image, text, use_cuda, clipseg_model):
+        import torch
+        import torch.nn.functional as F
+        from transformers import CLIPSegProcessor, CLIPSegForImageSegmentation
+
+        B, H, W, C = image.shape
+        
+        if B != 1:
+            raise NotImplementedError("Batch size must be 1")
+
+        # Desired slice size and overlap
+        slice_size = 352
+        overlap = slice_size // 2
+
+        # Calculate the number of slices needed along each dimension
+        num_slices_h = (H - overlap) // (slice_size - overlap) + 1
+        num_slices_w = (W - overlap) // (slice_size - overlap) + 1
+
+        # Prepare a list to store the slices
+        slices = []
+
+        # Generate the slices
+        for i in range(num_slices_h):
+            for j in range(num_slices_w):
+                start_h = i * (slice_size - overlap)
+                start_w = j * (slice_size - overlap)
+
+                end_h = min(start_h + slice_size, H)
+                end_w = min(start_w + slice_size, W)
+
+                start_h = max(0, end_h - slice_size)
+                start_w = max(0, end_w - slice_size)
+
+                slice_ = image[:, start_h:end_h, start_w:end_w, :]
+                slices.append(slice_)
+
+        # Initialize CLIPSeg model and processor
+        if clipseg_model:
+            processor = clipseg_model[0]
+            model = clipseg_model[1]
+        else:
+            processor = CLIPSegProcessor.from_pretrained("CIDAS/clipseg-rd64-refined")
+            model = CLIPSegForImageSegmentation.from_pretrained("CIDAS/clipseg-rd64-refined")
+        # Move model to CUDA if requested
+        if use_cuda and torch.cuda.is_available():
+            model = model.to('cuda')
+
+        processor.image_processor.do_rescale = True
+        processor.image_processor.do_resize = False
+
+        image_global = image.permute(0, 3, 1, 2)
+        image_global = F.interpolate(image_global, size=(slice_size, slice_size), mode='bilinear', align_corners=False)
+        image_global = image_global.permute(0, 2, 3, 1)
+        _, image_global = self.CLIPSeg_image(image_global.float(), text, processor, model, use_cuda)
+        image_global = image_global.permute(0, 3, 1, 2)
+        image_global = F.interpolate(image_global, size=(H, W), mode='bilinear', align_corners=False)
+        image_global = image_global.permute(0, 2, 3, 1)
+
+        # Apply the transformation to each slice
+        transformed_slices = []
+        for slice_ in slices:
+            transformed_mask, transformed_slice = self.CLIPSeg_image(slice_, text, processor, model, use_cuda)
+            transformed_slices.append(transformed_slice)
+
+        transformed_slices = torch.cat(transformed_slices)
+
+        # Initialize tensors for reconstruction
+        reconstructed_image = torch.zeros((B, H, W, C))
+        count_map = torch.zeros((B, H, W, C))
+
+        # Create a blending mask
+        mask = np.ones((slice_size, slice_size))
+        mask[:overlap, :] *= np.linspace(0, 1, overlap)[:, None]
+        mask[-overlap:, :] *= np.linspace(1, 0, overlap)[:, None]
+        mask[:, :overlap] *= np.linspace(0, 1, overlap)[None, :]
+        mask[:, -overlap:] *= np.linspace(1, 0, overlap)[None, :]
+        mask = torch.tensor(mask, dtype=torch.float32).unsqueeze(0).unsqueeze(-1)
+
+        # Place the transformed slices back into the original image dimensions
+        for idx in range(transformed_slices.shape[0]):
+            i = idx // num_slices_w
+            j = idx % num_slices_w
+
+            start_h = i * (slice_size - overlap)
+            start_w = j * (slice_size - overlap)
+
+            end_h = min(start_h + slice_size, H)
+            end_w = min(start_w + slice_size, W)
+
+            start_h = max(0, end_h - slice_size)
+            start_w = max(0, end_w - slice_size)
+
+            reconstructed_image[:, start_h:end_h, start_w:end_w, :] += transformed_slices[idx] * mask
+            count_map[:, start_h:end_h, start_w:end_w, :] += mask
+
+        # Avoid division by zero
+        count_map[count_map == 0] = 1
+
+        # Average the overlapping regions
+        y = reconstructed_image / count_map
+
+        total_power = (y + image_global) / 2
+        just_black = image_global < 0.01
+
+        p1 = total_power > .5
+        p2 = y > .5
+        p3 = image_global > .5
+
+        condition = p1 | p2 | p3
+        condition = condition & ~just_black
+        y = torch.where(condition, 1.0, 0.0)
+
+        return (y,)
+
+    def CLIPSeg_image(self, image, text, processor, model, use_cuda):
+        import torch
+        import torchvision.transforms.functional as TF
+        B, H, W, C = image.shape
+
+        import torchvision
         with torch.no_grad():
-            result = model(**inputs(text=text, images=image, padding=True, return_tensors="pt"))
+            image = image.permute(0, 3, 1, 2).to(torch.float32) * 255
 
-        tensor = torch.sigmoid(result[0])
-        mask = 1. - (tensor - tensor.min()) / tensor.max()
-        mask = mask.unsqueeze(0)
-        mask = tensor2pil(mask).convert("L")
-        mask = mask.resize(image.size)
+            inputs = processor(text=[text] * B, images=image, padding=True, return_tensors="pt")
 
-        return (pil2mask(mask), pil2tensor(ImageOps.invert(mask.convert("RGB"))))
+            # Move model and image tensors to CUDA if requested
+            if use_cuda and torch.cuda.is_available():
+                model = model.to('cuda')
+                inputs = {k: v.to('cuda') if isinstance(v, torch.Tensor) else v for k, v in inputs.items()}
+
+            result = model(**inputs)
+            t = torch.sigmoid(result[0])
+            mask = (t - t.min()) / t.max()
+            mask = torchvision.transforms.functional.resize(mask, (H, W))
+            mask = mask.unsqueeze(-1)
+            mask_img = mask.repeat(1, 1, 1, 3)
+
+            # Move mask and mask_img back to CPU if they were moved to CUDA
+            if use_cuda and torch.cuda.is_available():
+                mask = mask.cpu()
+                mask_img = mask_img.cpu()
+
+        return (mask, mask_img,)
 
 # CLIPSeg Node
 
@@ -13820,6 +14240,8 @@ NODE_CLASS_MAPPINGS = {
     "Logic Comparison XOR": WAS_Logical_XOR,
     "Logic NOT": WAS_Logical_NOT,
     "Lora Loader": WAS_Lora_Loader,
+    "Hex to HSL": WAS_Hex_to_HSL,
+    "HSL to Hex": WAS_HSL_to_Hex,
     "Image SSAO (Ambient Occlusion)": WAS_Image_Ambient_Occlusion,
     "Image SSDO (Direct Occlusion)": WAS_Image_Direct_Occlusion,
     "Image Analyze": WAS_Image_Analyze,
@@ -13868,6 +14290,7 @@ NODE_CLASS_MAPPINGS = {
     "Image Resize": WAS_Image_Rescale,
     "Image Rotate": WAS_Image_Rotate,
     "Image Rotate Hue": WAS_Image_Rotate_Hue,
+    "Image Send HTTP": WAS_Image_Send_HTTP,
     "Image Save": WAS_Image_Save,
     "Image Seamless Texture": WAS_Image_Make_Seamless,
     "Image Select Channel": WAS_Image_Select_Channel,
@@ -13976,6 +14399,7 @@ NODE_CLASS_MAPPINGS = {
     "Text List to Text": WAS_Text_List_to_Text,
     "Text Load Line From File": WAS_Text_Load_Line_From_File,
     "Text Multiline": WAS_Text_Multiline,
+    "Text Multiline (Code Compatible)": WAS_Text_Multiline_Raw,
     "Text Parse A1111 Embeddings": WAS_Text_Parse_Embeddings_By_Name,
     "Text Parse Noodle Soup Prompts": WAS_Text_Parse_NSP,
     "Text Parse Tokens": WAS_Text_Parse_Tokens,
@@ -13984,6 +14408,7 @@ NODE_CLASS_MAPPINGS = {
     "Text String": WAS_Text_String,
     "Text Contains": WAS_Text_Contains,
     "Text Shuffle": WAS_Text_Shuffle,
+    "Text Sort": WAS_Text_Sort,
     "Text to Conditioning": WAS_Text_to_Conditioning,
     "Text to Console": WAS_Text_to_Console,
     "Text to Number": WAS_Text_To_Number,
@@ -13997,6 +14422,7 @@ NODE_CLASS_MAPPINGS = {
     "Write to Video": WAS_Video_Writer,
     "VAE Input Switch": WAS_VAE_Input_Switch,
     "Video Dump Frames": WAS_Video_Frame_Dump,
+    "CLIPSEG2": CLIPSeg2
 }
 
 #! EXTRA NODES
