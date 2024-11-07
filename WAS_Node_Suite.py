@@ -3495,6 +3495,7 @@ class WAS_Image_Paste_Crop:
             }
 
     RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("IMAGE", "MASK")
     FUNCTION = "image_paste_crop"
 
     CATEGORY = "WAS Suite/Image/Process"
@@ -3603,6 +3604,7 @@ class WAS_Image_Paste_Crop_Location:
             }
 
     RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("IMAGE", "MASK")
     FUNCTION = "image_paste_crop_location"
 
     CATEGORY = "WAS Suite/Image/Process"
@@ -5270,6 +5272,7 @@ class WAS_Load_Image_Batch:
         return {
             "required": {
                 "mode": (["single_image", "incremental_image", "random"],),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff}),
                 "index": ("INT", {"default": 0, "min": 0, "max": 150000, "step": 1}),
                 "label": ("STRING", {"default": 'Batch 001', "multiline": False}),
                 "path": ("STRING", {"default": '', "multiline": False}),
@@ -5287,7 +5290,7 @@ class WAS_Load_Image_Batch:
 
     CATEGORY = "WAS Suite/IO"
 
-    def load_batch_images(self, path, pattern='*', index=0, mode="single_image", label='Batch 001', allow_RGBA_output='false', filename_text_extension='true'):
+    def load_batch_images(self, path, pattern='*', index=0, mode="single_image", seed=0, label='Batch 001', allow_RGBA_output='false', filename_text_extension='true'):
 
         allow_RGBA_output = (allow_RGBA_output == 'true')
 
@@ -5306,6 +5309,7 @@ class WAS_Load_Image_Batch:
                 cstr(f"No valid image was found for the next ID. Did you remove images from the source directory?").error.print()
                 return (None, None)
         else:
+            random.seed(seed)
             newindex = int(random.random() * len(fl.image_paths))
             image, filename = fl.get_image_by_id(newindex)
             if image == None:
@@ -5494,6 +5498,7 @@ class WAS_Image_Padding:
         }
 
     RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("IMAGE", "MASK")
     FUNCTION = "image_padding"
 
     CATEGORY = "WAS Suite/Image/Transform"
@@ -7947,6 +7952,7 @@ class WAS_Mask_Paste_Region:
         }
 
     RETURN_TYPES = ("MASK", "MASK")
+    RETURN_NAMES = ("RESULT_MASK", "CROP_MASK")
     FUNCTION = "mask_paste_region"
 
     CATEGORY = "WAS Suite/Image/Masking"
@@ -8913,6 +8919,7 @@ class MiDaS_Background_Foreground_Removal:
         }
 
     RETURN_TYPES = ("IMAGE", "IMAGE")
+    RETURN_NAMES = ("RESULT", "DEPTH")
     FUNCTION = "midas_remove"
 
     CATEGORY = "WAS Suite/Image/AI"
@@ -10076,6 +10083,7 @@ class WAS_Text_String:
             }
         }
     RETURN_TYPES = (TEXT_TYPE,TEXT_TYPE,TEXT_TYPE,TEXT_TYPE)
+    RETURN_NAMES = ("TEXT", "TEXT_B", "TEXT_C", "TEXT_D")
     FUNCTION = "text_string"
 
     CATEGORY = "WAS Suite/Text"
@@ -10114,6 +10122,7 @@ class WAS_Text_String_Truncate:
             }
         }
     RETURN_TYPES = (TEXT_TYPE,TEXT_TYPE,TEXT_TYPE,TEXT_TYPE)
+    RETURN_NAMES = ("TEXT", "TEXT_B", "TEXT_C", "TEXT_D")
     FUNCTION = "truncate_string"
 
     CATEGORY = "WAS Suite/Text/Operations"
@@ -10380,9 +10389,9 @@ class WAS_Find:
 
     def execute(self, text, substring, pattern):
         if substring:
-            return substring in text
+            return (substring in text, )
 
-        return bool(re.search(pattern, text))
+        return (bool(re.search(pattern, text)), )
 
 
 
@@ -11325,6 +11334,7 @@ class WAS_BLIP_Analyze_Image:
         }
 
     RETURN_TYPES = (TEXT_TYPE, TEXT_TYPE)
+    RETURN_NAMES = ("FULL_CAPTIONS", "CAPTIONS")
     OUTPUT_IS_LIST = (False, True)
 
     FUNCTION = "blip_caption_image"
@@ -12216,6 +12226,10 @@ class WAS_Bounded_Image_Crop_With_Mask:
                 "padding_right": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
                 "padding_top": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
                 "padding_bottom": ("INT", {"default": 64, "min": 0, "max": 0xffffffffffffffff}),
+                
+            },
+            "optional":{
+                "return_list": ("BOOLEAN", {"default": False}),
             }
         }
 
@@ -12224,7 +12238,7 @@ class WAS_Bounded_Image_Crop_With_Mask:
 
     CATEGORY = "WAS Suite/Image/Bound"
 
-    def bounded_image_crop_with_mask(self, image, mask, padding_left, padding_right, padding_top, padding_bottom):
+    def bounded_image_crop_with_mask(self, image, mask, padding_left, padding_right, padding_top, padding_bottom,return_list=False):
         # Ensure we are working with batches
         image = image.unsqueeze(0) if image.dim() == 3 else image
         mask = mask.unsqueeze(0) if mask.dim() == 2 else mask
@@ -12251,8 +12265,9 @@ class WAS_Bounded_Image_Crop_With_Mask:
             # Even if only a single mask, create a bounds for each cropped image
             all_bounds.append([rmin, rmax, cmin, cmax])
             cropped_images.append(image[i][rmin:rmax+1, cmin:cmax+1, :])
-
-            return torch.stack(cropped_images), all_bounds
+        if return_list:
+            return cropped_images, all_bounds
+        return torch.stack(cropped_images), all_bounds
 
 # DEBUG IMAGE BOUNDS TO CONSOLE
 
@@ -13032,7 +13047,7 @@ class WAS_Latent_Size_To_Number:
         }
 
     RETURN_TYPES = ("NUMBER", "NUMBER", "FLOAT", "FLOAT", "INT", "INT")
-    RETURN_NAMES = ("tensor_w_num","tensor_h_num")
+    RETURN_NAMES = ("tensor_w_num","tensor_h_num","tensor_w_float","tensor_h_float","tensor_w_int","tensor_h_int")
     FUNCTION = "latent_width_height"
 
     CATEGORY = "WAS Suite/Number/Operations"
@@ -14505,7 +14520,9 @@ if os.path.exists(BKAdvCLIP_dir):
         cstr('`CLIPTextEncode (BlenderNeko Advanced + NSP)` node enabled under `WAS Suite/Conditioning` menu.').msg.print()
 
 # opencv-python-headless handling
-if 'opencv-python' in packages() or 'opencv-python-headless' in packages():
+installed_packages = packages()
+opencv_candidates = ['opencv-python', 'opencv-python-headless', 'opencv-contrib-python', 'opencv-contrib-python-headless']
+if any(package in installed_packages for package in opencv_candidates):
     try:
         import cv2
         build_info = ' '.join(cv2.getBuildInformation().split())

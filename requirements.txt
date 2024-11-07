@@ -8,8 +8,12 @@ joblib
 matplotlib
 numba
 numpy
+<<<<<<< HEAD
 #opencv-python-headless[ffmpeg]<=4.9.0.80
 opencv-python-headless>=4.9.0
+=======
+opencv-python-headless[ffmpeg]
+>>>>>>> fe7e0884aaf0188248d9abf1e500f5116097fec1
 pilgram
 git+https://github.com/WASasquatch/ffmpy.git
 rembg
